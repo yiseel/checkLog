@@ -1,4 +1,8 @@
 import { createClient } from '@supabase/supabase-js';
+import { registerSW } from 'virtual:pwa-register';
+
+// 앱(PWA) 설치·오프라인용 서비스 워커 등록. 새 버전이 배포되면 자동으로 갱신된다
+registerSW({ immediate: true });
 
 (() => {
   'use strict';
