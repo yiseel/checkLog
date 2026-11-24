@@ -12,7 +12,7 @@ import { createClient } from '@supabase/supabase-js';
     routines: [],      // [{ id, name, color, freq: { type, days, times }, memo, startDate }]
     routineChecks: {}, // { 'YYYY-MM-DD': [routineId, ...] }
     todos: {},         // { 'YYYY-MM-DD': [{ id, text, done }] }
-    diary: {},         // { 'YYYY-MM-DD': '내용' }
+    diary: {},         // { 'YYYY-MM-DD': '내용' | { text: '내용', mood: '😊' } } — 기분이 있을 때만 객체
   });
 
   function loadDB() {
@@ -160,6 +160,8 @@ import { createClient } from '@supabase/supabase-js';
         resetEditing();
         if (!routineDraft) route();
       }
+      // 비로그인으로 확인됐는데 루틴 페이지에 있으면 로그인 화면으로
+      if (location.hash.startsWith('#/routine')) route();
       return;
     }
     if (location.hash === '#/login') location.replace('#/');
@@ -358,6 +360,31 @@ import { createClient } from '@supabase/supabase-js';
   }
 
   // 월간 현황 아이콘: 달력 틀 + 막대 그래프 (currentColor라 버튼 글자색을 따른다)
+  // 수정(연필) · 삭제(휴지통) 아이콘 — currentColor라 버튼 글자색을 따른다
+  const EDIT_ICON = `
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M10.5 2.5l3 3L6 13H3v-3z" /><path d="M9 4l3 3" />
+    </svg>`;
+  const DELETE_ICON = `
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M2.5 4.5h11" /><path d="M6 4.5V3h4v1.5" />
+      <path d="M4 4.5l.7 8.6a1 1 0 0 0 1 .9h4.6a1 1 0 0 0 1-.9l.7-8.6" />
+      <path d="M6.75 7v4.5M9.25 7v4.5" />
+    </svg>`;
+
+  const SAVE_ICON = `
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M3 8.5l3.2 3L13 4.5" />
+    </svg>`;
+  const CANCEL_ICON = `
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"
+         stroke-linecap="round" aria-hidden="true">
+      <path d="M4 4l8 8M12 4l-8 8" />
+    </svg>`;
+
   const STATS_ICON = `
     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"
          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -386,11 +413,20 @@ import { createClient } from '@supabase/supabase-js';
   let cameFromMain = false;
 
   const view = document.getElementById('view');
+  // 메인의 주간 달력은 header 안(제목 줄 아래)에 그려서 header와 한 덩어리로 고정
+  const headerSub = document.getElementById('header-sub');
 
   /* =========================================================
    * 루틴 도메인
    * ========================================================= */
-  const COLORS = ['#4f6bed', '#22a06b', '#f5a524', '#e5484d', '#8e4ec6', '#12a594', '#e93d82', '#6b7280'];
+  // 루틴 색상 (파스텔): 파랑 · 초록 · 노랑 · 코랄 · 보라 · 민트 · 분홍 · 회색
+  const COLORS = ['#a3bdf2', '#a8dcb5', '#f6d58e', '#f4aaa6', '#c9b0ea', '#97d6cf', '#f5b5d2', '#bcc2cc'];
+  // 예전(진한) 색으로 저장된 루틴은 같은 자리의 파스텔 색으로 보여준다 (다시 저장하면 새 색으로 바뀜)
+  const OLD_COLORS = ['#4f6bed', '#22a06b', '#f5a524', '#e5484d', '#8e4ec6', '#12a594', '#e93d82', '#6b7280'];
+  const routineColor = (c) => {
+    const i = OLD_COLORS.indexOf(String(c || '').toLowerCase());
+    return i >= 0 ? COLORS[i] : c || COLORS[0];
+  };
 
   function routineAppliesTo(r, dateStr) {
     if (r.startDate && dateStr < r.startDate) return false;
@@ -418,10 +454,41 @@ import { createClient } from '@supabase/supabase-js';
     return `주 ${freq.times}회`;
   }
 
+  /* --- 일기 (기분 이모지 포함) ---
+   * 예전 데이터·DB 호환을 위해 기분이 없으면 문자열 그대로, 있으면 { text, mood } 로 저장한다.
+   * 읽을 때는 항상 아래 함수를 쓸 것 */
+  const MOODS = [
+    ['😄', '신남'],
+    ['😊', '좋음'],
+    ['🙂', '평온'],
+    ['😐', '그저 그럼'],
+    ['😔', '우울'],
+    ['😢', '슬픔'],
+    ['😠', '화남'],
+    ['😴', '피곤'],
+  ];
+  const moodLabel = (m) => (MOODS.find(([e]) => e === m) || [])[1] || '';
+
+  function diaryText(dateStr) {
+    const v = db.diary[dateStr];
+    return typeof v === 'string' ? v : (v && v.text) || '';
+  }
+  function diaryMood(dateStr) {
+    const v = db.diary[dateStr];
+    return v && typeof v === 'object' ? v.mood || '' : '';
+  }
+  function hasDiary(dateStr) {
+    return Boolean(diaryText(dateStr).trim() || diaryMood(dateStr));
+  }
+  function setDiary(dateStr, text, mood) {
+    if (!text.trim() && !mood) delete db.diary[dateStr];
+    else db.diary[dateStr] = mood ? { text, mood } : text;
+  }
+
   function hasData(dateStr) {
     return (
       (db.todos[dateStr] || []).length > 0 ||
-      !!(db.diary[dateStr] || '').trim() ||
+      hasDiary(dateStr) ||
       (db.routineChecks[dateStr] || []).length > 0
     );
   }
@@ -492,7 +559,7 @@ import { createClient } from '@supabase/supabase-js';
         if (r.freq.type === 'weekly') meta += ` · 이번 주 ${weeklyCount(r.id, d)}/${r.freq.times}회`;
         return `
           <li class="item routine-item ${checked ? 'done' : ''}">
-            <span class="routine-bar" style="background:${esc(r.color)}"></span>
+            <span class="routine-bar" style="background:${esc(routineColor(r.color))}"></span>
             <input type="checkbox" data-action="toggle-routine" data-id="${r.id}" ${checked ? 'checked' : ''} aria-label="${esc(r.name)} 완료" />
             ${r.emoji ? `<span class="routine-emoji">${esc(r.emoji)}</span>` : ''}
             <div class="text">
@@ -513,92 +580,117 @@ import { createClient } from '@supabase/supabase-js';
       </section>`;
   }
 
+  /**
+   * 할 일 입력 줄 (추가 · 수정 공용). 저장된 줄(.todo-item)과 같은 배치:
+   * [체크박스 자리] [입력칸 — 글자 크기·줄 높이 동일] [저장 아이콘] [취소 아이콘]
+   */
+  function todoInputRow({ form, id = '', value = '', done = false }) {
+    const isAdd = form === 'todo-add';
+    return `
+      <li class="item todo-item todo-editing">
+        <form class="todo-inline" data-form="${form}" ${id ? `data-id="${id}"` : ''}>
+          <span class="todo-check-slot ${done ? 'done' : ''}" aria-hidden="true"></span>
+          <input class="todo-input" name="text" value="${esc(value)}" maxlength="200" autocomplete="off"
+                 placeholder="할 일을 입력하세요" aria-label="${isAdd ? '새 할 일' : '할 일 수정'}" />
+          <button class="btn sm icon primary" type="submit" aria-label="저장" title="저장 (Enter)">${SAVE_ICON}</button>
+          <button class="btn sm icon" type="button" data-action="${isAdd ? 'cancel-todo-add' : 'cancel-todo-edit'}"
+                  aria-label="취소" title="취소 (Esc)">${CANCEL_ICON}</button>
+        </form>
+      </li>`;
+  }
+
   function renderTodos() {
     const d = ui.selected;
     const todos = db.todos[d] || [];
     const doneCount = todos.filter((t) => t.done).length;
 
+    // 편집 모드(+ 버튼으로 켜고 끔)에서만 수정·삭제 버튼과 추가 입력 줄을 보여준다
+    const editMode = ui.todoAdding;
+
     const items = todos
       .map((t) => {
-        if (ui.todoEditingId === t.id) {
-          return `
-            <li class="item">
-              <form class="inline-form" style="flex:1" data-form="todo-edit" data-id="${t.id}">
-                <input class="field" name="text" value="${esc(t.text)}" maxlength="200" autocomplete="off" />
-                <button class="btn primary" type="submit">저장</button>
-                <button class="btn" type="button" data-action="cancel-todo-edit">취소</button>
-              </form>
-            </li>`;
-        }
+        if (editMode && ui.todoEditingId === t.id) return todoInputRow({ form: 'todo-edit', id: t.id, value: t.text, done: t.done });
         return `
-          <li class="item ${t.done ? 'done' : ''}">
+          <li class="item todo-item ${t.done ? 'done' : ''}">
             <input type="checkbox" data-action="toggle-todo" data-id="${t.id}" ${t.done ? 'checked' : ''} aria-label="완료" />
             <span class="text">${esc(t.text)}</span>
-            <button class="btn sm" data-action="edit-todo" data-id="${t.id}">수정</button>
-            <button class="btn sm danger" data-action="delete-todo" data-id="${t.id}">삭제</button>
+            ${editMode ? `
+            <button class="btn sm icon" data-action="edit-todo" data-id="${t.id}" aria-label="수정" title="수정">${EDIT_ICON}</button>
+            <button class="btn sm icon danger" data-action="delete-todo" data-id="${t.id}" aria-label="삭제" title="삭제">${DELETE_ICON}</button>` : ''}
           </li>`;
       })
       .join('');
 
-    const addForm = ui.todoAdding
-      ? `
-        <form class="inline-form" data-form="todo-add">
-          <input class="field" name="text" placeholder="할 일을 입력하세요" maxlength="200" autocomplete="off" />
-          <button class="btn primary" type="submit">확인</button>
-          <button class="btn" type="button" data-action="cancel-todo-add">취소</button>
-        </form>`
-      : '';
+    // 추가 입력 줄은 목록 맨 아래에 (다른 줄을 수정 중일 때는 숨김)
+    const addRow = editMode && !ui.todoEditingId ? todoInputRow({ form: 'todo-add' }) : '';
 
     return `
       <section class="section">
         <div class="section-head">
-          <h2>해야 할 일${todos.length ? `<span class="count">${doneCount}/${todos.length}</span>` : ''}</h2>
-          <button class="add-btn" data-action="add-todo" aria-label="할 일 추가">+</button>
+          <h2>할 일${todos.length ? `<span class="count">${doneCount}/${todos.length}</span>` : ''}</h2>
+          <button class="add-btn ${editMode ? 'on' : ''}" data-action="add-todo"
+                  aria-label="${editMode ? '편집 닫기' : '할 일 편집'}" title="${editMode ? '편집 닫기' : '할 일 추가·수정·삭제'}">+</button>
         </div>
-        ${addForm}
-        ${todos.length ? `<ul class="list">${items}</ul>` : ui.todoAdding ? '' : '<p class="empty">등록된 할 일이 없어요.</p>'}
+        ${todos.length || addRow ? `<ul class="list">${items}${addRow}</ul>` : '<p class="empty">등록된 할 일이 없어요.</p>'}
       </section>`;
   }
 
   function renderDiary() {
     const d = ui.selected;
-    const text = db.diary[d] || '';
+    const text = diaryText(d);
+    const mood = diaryMood(d);
 
     let body;
     if (ui.diaryEditing) {
       body = `
-        <form class="inline-form col" data-form="diary">
-          <textarea class="field" name="text" placeholder="오늘 하루는 어땠나요?">${esc(text)}</textarea>
-          <div style="display:flex;gap:0.5rem">
-            <button class="btn" type="button" data-action="cancel-diary">취소</button>
-            <button class="btn primary" type="submit">확인</button>
+        <form class="diary-form" data-form="diary">
+          <div class="mood-pick" role="radiogroup" aria-label="오늘의 기분">
+            <span class="mood-pick-label">오늘의 기분</span>
+            <div class="mood-options">
+              ${MOODS.map(
+                ([e, label]) => `<button type="button" class="mood-opt ${mood === e ? 'on' : ''}" data-action="pick-mood"
+                                   data-mood="${e}" role="radio" aria-checked="${mood === e}" title="${label}">${e}</button>`
+              ).join('')}
+            </div>
+            <input type="hidden" name="mood" value="${mood}" />
+          </div>
+          <textarea class="field diary-input" name="text" data-autogrow placeholder="오늘 하루는 어땠나요?">${esc(text)}</textarea>
+          <div class="diary-actions">
+            <button class="btn sm icon primary" type="submit" aria-label="저장" title="저장">${SAVE_ICON}</button>
+            <button class="btn sm icon" type="button" data-action="cancel-diary" aria-label="취소" title="취소 (Esc)">${CANCEL_ICON}</button>
           </div>
         </form>`;
-    } else if (text.trim()) {
+    } else if (text.trim() || mood) {
       body = `
-        <p class="diary-text">${esc(text)}</p>
-        <div class="diary-actions">
-          <button class="btn sm" data-action="edit-diary">수정</button>
+        <div class="diary-view">
+          ${mood ? `<div class="diary-mood"><span class="diary-mood-label">오늘의 기분</span><span class="diary-mood-emoji" title="${esc(moodLabel(mood))}">${mood}</span></div>` : ''}
+          ${text.trim() ? `<p class="diary-text">${esc(text)}</p>` : ''}
         </div>`;
     } else {
       body = '<p class="empty">작성된 일기가 없어요.</p>';
     }
 
-    // 일기는 하루 1개이므로, 이미 작성된 경우 + 버튼은 숨기고 수정 버튼으로 편집
-    const showAdd = !ui.diaryEditing && !text.trim();
+    // 일기는 하루 1개: 작성 전에는 +, 작성 후에는 연필 아이콘으로 같은 자리에서 작성·수정
+    const written = hasDiary(d);
+    const headBtn = ui.diaryEditing
+      ? ''
+      : written
+        ? `<button class="add-btn icon" data-action="edit-diary" aria-label="일기 수정" title="일기 수정">${EDIT_ICON}</button>`
+        : '<button class="add-btn" data-action="edit-diary" aria-label="일기 작성" title="일기 작성">+</button>';
 
     return `
       <section class="section">
         <div class="section-head">
           <h2>일기</h2>
-          ${showAdd ? '<button class="add-btn" data-action="edit-diary" aria-label="일기 작성">+</button>' : ''}
+          ${headBtn}
         </div>
         ${body}
       </section>`;
   }
 
   function renderMain() {
-    view.innerHTML = renderCalendar() + renderRoutines() + renderTodos() + renderDiary();
+    if (headerSub) headerSub.innerHTML = `<div class="app-header__sub">${renderCalendar()}</div>`;
+    view.innerHTML = (headerSub ? '' : renderCalendar()) + renderRoutines() + renderTodos() + renderDiary();
   }
 
   function resetEditing() {
@@ -640,6 +732,7 @@ import { createClient } from '@supabase/supabase-js';
           freq: { type: 'daily', days: [], times: 3 },
           memo: '',
         };
+    routineDraft.color = routineColor(routineDraft.color);
     routineDraft.error = '';
     routineDraft.pickerOpen = false;
     routineDraft.modal = existing ? true : modal;
@@ -713,7 +806,7 @@ import { createClient } from '@supabase/supabase-js';
               (rt) => `
               <li class="item sort-item ${rt.id === currentId ? 'current' : ''}" data-id="${rt.id}">
                 <span class="drag-handle" aria-label="순서 변경">${GRIP_ICON}</span>
-                <span class="routine-bar" style="background:${esc(rt.color)}"></span>
+                <span class="routine-bar" style="background:${esc(routineColor(rt.color))}"></span>
                 <button type="button" class="sort-body" data-action="open-routine" data-id="${rt.id}">
                   ${rt.emoji ? `<span class="routine-emoji">${esc(rt.emoji)}</span>` : ''}
                   <span class="sort-name">${esc(rt.name)}</span>
@@ -853,6 +946,19 @@ import { createClient } from '@supabase/supabase-js';
         </div>
       </form>`;
 
+    // 팝업이 이미 떠 있으면 팝업 안의 폼만 다시 그린다.
+    // (전체를 다시 그리면 배경 블러·팝업이 새로 만들어지면서 빈도 버튼 등을 누를 때마다 깜빡이고,
+    //  팝업 안 스크롤 위치도 맨 위로 돌아간다)
+    const openModal = view.querySelector('.routine-modal');
+    if (r.modal && !r.modalEnter && openModal) {
+      const scrollTop = openModal.scrollTop;
+      const activeName = document.activeElement?.name;
+      openModal.innerHTML = form;
+      openModal.scrollTop = scrollTop;
+      if (activeName) openModal.querySelector(`[name="${activeName}"]`)?.focus();
+      return;
+    }
+
     const modal = r.modal
       ? `
       <div class="modal-backdrop routine-modal-backdrop ${r.modalEnter ? 'enter' : ''}">
@@ -933,7 +1039,8 @@ import { createClient } from '@supabase/supabase-js';
       routineText: `${routineDone}/${due.length}`,
       todoRate: todos.length ? Math.round((todoDone / todos.length) * 100) : null,
       todoText: `${todoDone}/${todos.length}`,
-      diary: Boolean((db.diary[dateStr] || '').trim()),
+      diary: hasDiary(dateStr),
+      mood: diaryMood(dateStr),
     };
   }
 
@@ -1027,8 +1134,8 @@ import { createClient } from '@supabase/supabase-js';
                 <span class="routine-meta">${s.done}/${s.target}${unit}</span>
               </div>
             </div>
-            <div class="progress"><span style="width:${s.rate || 0}%;background:${esc(r.color)}"></span></div>
-            <div class="month-strip" style="--c:${esc(r.color)}">${strip}</div>
+            <div class="progress"><span style="width:${s.rate || 0}%;background:${esc(routineColor(r.color))}"></span></div>
+            <div class="month-strip" style="--c:${esc(routineColor(r.color))}">${strip}</div>
           </li>`;
       })
       .join('');
@@ -1046,7 +1153,7 @@ import { createClient } from '@supabase/supabase-js';
       .flatMap((d) => db.todos[d] || []);
     const todoDone = todoAll.filter((t) => t.done).length;
     const todoRate = todoAll.length ? Math.round((todoDone / todoAll.length) * 100) : null;
-    const diaryCount = Object.keys(db.diary).filter((d) => d.startsWith(ym + '-') && (db.diary[d] || '').trim()).length;
+    const diaryCount = Object.keys(db.diary).filter((d) => d.startsWith(ym + '-') && hasDiary(d)).length;
 
     const cell = (label, value) => `<div><span class="routine-meta">${label}</span><strong>${value}</strong></div>`;
     const avgText = avg === null ? '-' : avg + '%';
@@ -1176,31 +1283,53 @@ import { createClient } from '@supabase/supabase-js';
         </div>
         ${
           all.length
-            ? `<div class="progress todo-progress todo-progress--total"><span style="width:${Math.round((doneCount / all.length) * 100)}%"></span></div>`
+            ? `<div class="todo-total">
+                 <div class="todo-total-head">
+                   <span class="todo-total-label">이번 달 전체</span>
+                   <span class="routine-meta stats-day-count">${doneCount}/${all.length} · ${Math.round((doneCount / all.length) * 100)}%</span>
+                 </div>
+                 <div class="progress todo-progress todo-progress--total"><span style="width:${Math.round((doneCount / all.length) * 100)}%"></span></div>
+               </div>`
             : ''
         }
         ${body}
       </section>`;
   }
 
-  // 그 달에 쓴 일기 (날짜순)
+  // 그 달의 일기: 일주일(일~토)씩 한 줄, 날짜·요일 + 기분 이모지 (기분 없이 쓴 날은 연필)
   function renderMonthDiary(ym) {
-    const dates = Object.keys(db.diary)
-      .filter((d) => d.startsWith(ym + '-') && (db.diary[d] || '').trim())
-      .sort();
+    const days = monthDays(ym);
+    const written = days.filter(hasDiary).length;
 
-    const body = dates.length
-      ? `<ul class="stats-days">
-          ${dates
-            .map(
-              (d) => `
-              <li class="stats-day stats-diary-row">
-                ${statsDayHead(d)}
-                <p class="stats-diary" title="${esc(db.diary[d])}">${esc(db.diary[d].replace(/\s*\n\s*/g, ' '))}</p>
-              </li>`
-            )
-            .join('')}
-        </ul>`
+    // 일요일 시작 주 단위로 자르기 (달 밖 날짜는 빈 칸)
+    const weeks = [];
+    let week = Array(parse(days[0]).getDay()).fill(null);
+    days.forEach((d) => {
+      week.push(d);
+      if (week.length === 7) {
+        weeks.push(week);
+        week = [];
+      }
+    });
+    if (week.length) weeks.push([...week, ...Array(7 - week.length).fill(null)]);
+
+    const cellHtml = (d) => {
+      if (!d) return '<div class="dweek-cell blank"></div>';
+      const dow = parse(d).getDay();
+      const mood = diaryMood(d);
+      const text = diaryText(d).trim();
+      const tip = hasDiary(d)
+        ? [dayLabel(d), mood ? `${mood} ${moodLabel(mood)}` : '', text].filter(Boolean).join('\n')
+        : dayLabel(d);
+      return `
+        <div class="dweek-cell ${hasDiary(d) ? 'has' : ''} ${dow === 0 ? 'sun' : dow === 6 ? 'sat' : ''}" title="${esc(tip)}">
+          <span class="dweek-date">${Number(d.slice(8))}<small>${WEEKDAYS[dow]}</small></span>
+          <span class="dweek-mood">${mood || (text ? DIARY_ICON : '')}</span>
+        </div>`;
+    };
+
+    const body = written
+      ? `<div class="dweeks">${weeks.map((w) => `<div class="dweek">${w.map(cellHtml).join('')}</div>`).join('')}</div>`
       : '<p class="empty">이 달에 쓴 일기가 없어요.</p>';
 
     return `
@@ -1390,8 +1519,15 @@ import { createClient } from '@supabase/supabase-js';
     let m;
     document.body.dataset.route = hash === '/login' ? 'login' : '';
     setHeaderTitle(null);
+    if (headerSub) headerSub.innerHTML = ''; // 메인이 아니면 header 달력 비움 (메인은 renderMain에서 다시 채움)
     document.body.classList.remove('modal-open');
     if (hash !== '/login') loginState = null;
+    // 루틴 관리·추가·수정 페이지는 로그인 후에만 (주소로 직접 들어와도 로그인 화면으로).
+    // 세션 확인 중(authLoading)에는 막지 않고, 확인 결과 비로그인이면 handleSession → route 에서 다시 걸러진다
+    if (hash.startsWith('/routine') && needLogin() && !authLoading) {
+      location.replace('#/login');
+      return;
+    }
     if (hash === '/login') {
       if (currentUser) {
         location.replace('#/');
@@ -1430,10 +1566,42 @@ import { createClient } from '@supabase/supabase-js';
   /* =========================================================
    * 이벤트 처리
    * ========================================================= */
-  view.addEventListener('click', (e) => {
+  /* ---------- 로그인 필요 동작 ---------- */
+  const WRITE_ACTIONS = new Set([
+    'new-routine', 'edit-routine', 'toggle-routine',
+    'add-todo', 'toggle-todo', 'edit-todo', 'delete-todo',
+    'edit-diary',
+  ]);
+
+  /** Supabase가 설정돼 있는데 로그인하지 않은 상태 */
+  const needLogin = () => Boolean(supabase) && !currentUser;
+
+  function askLogin() {
+    void showDialog({
+      title: '로그인이 필요해요',
+      message: '로그인 후 작성할 수 있어요.',
+      confirmText: '로그인',
+      cancelText: '취소',
+    }).then((ok) => {
+      if (ok) location.hash = '#/login';
+    });
+  }
+
+  // 본문(view)과 header 안 달력(headerSub)의 클릭을 같은 처리기로
+  view.addEventListener('click', onViewClick);
+  headerSub?.addEventListener('click', onViewClick);
+
+  function onViewClick(e) {
     const el = e.target.closest('[data-action]');
     if (!el) return;
     const { action, id } = el.dataset;
+
+    // 로그인 전에는 작성·수정·체크 동작을 막고 로그인 안내
+    if (WRITE_ACTIONS.has(action) && needLogin()) {
+      e.preventDefault(); // 체크박스가 체크된 모양으로 바뀌지 않게
+      askLogin();
+      return;
+    }
 
     switch (action) {
       /* --- 달력 --- */
@@ -1477,13 +1645,15 @@ import { createClient } from '@supabase/supabase-js';
 
       /* --- 할 일 --- */
       case 'add-todo':
-        ui.todoAdding = true;
+        // + 버튼: 편집 모드 켜기/끄기
+        ui.todoAdding = !ui.todoAdding;
         ui.todoEditingId = null;
         renderMain();
-        focusField('[data-form="todo-add"] input');
+        if (ui.todoAdding) focusField('[data-form="todo-add"] .todo-input');
         break;
       case 'cancel-todo-add':
         ui.todoAdding = false;
+        ui.todoEditingId = null;
         renderMain();
         break;
       case 'toggle-todo': {
@@ -1496,10 +1666,9 @@ import { createClient } from '@supabase/supabase-js';
         break;
       }
       case 'edit-todo':
-        ui.todoEditingId = id;
-        ui.todoAdding = false;
+        ui.todoEditingId = id; // 편집 모드는 유지
         renderMain();
-        focusField(`[data-form="todo-edit"] input`);
+        focusField('[data-form="todo-edit"] .todo-input');
         break;
       case 'cancel-todo-edit':
         ui.todoEditingId = null;
@@ -1524,7 +1693,20 @@ import { createClient } from '@supabase/supabase-js';
         ui.diaryEditing = true;
         renderMain();
         focusField('[data-form="diary"] textarea');
+        autoGrow(view.querySelector('[data-form="diary"] textarea'));
         break;
+      case 'pick-mood': {
+        // 다시 그리지 않고 버튼 상태만 바꾼다 (입력 중인 일기 내용 유지). 같은 걸 다시 누르면 선택 해제
+        const box = el.closest('.mood-pick');
+        const input = box.querySelector('input[name="mood"]');
+        input.value = input.value === el.dataset.mood ? '' : el.dataset.mood;
+        box.querySelectorAll('.mood-opt').forEach((b) => {
+          const on = b.dataset.mood === input.value;
+          b.classList.toggle('on', on);
+          b.setAttribute('aria-checked', on);
+        });
+        break;
+      }
       case 'cancel-diary':
         ui.diaryEditing = false;
         renderMain();
@@ -1622,6 +1804,16 @@ import { createClient } from '@supabase/supabase-js';
         break;
       }
     }
+  }
+
+  // 일기 입력칸: 크기 조절 손잡이 대신 내용에 맞춰 높이가 자동으로 늘어난다
+  function autoGrow(el) {
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = el.scrollHeight + 2 + 'px'; // +2: 위아래 border
+  }
+  view.addEventListener('input', (e) => {
+    if (e.target.matches('textarea[data-autogrow]')) autoGrow(e.target);
   });
 
   // 루틴 설정 폼: 입력값을 draft에 유지 (재렌더링 시 보존)
@@ -1645,6 +1837,12 @@ import { createClient } from '@supabase/supabase-js';
     e.preventDefault();
     const type = form.dataset.form;
 
+    // 로그인 전에는 저장하지 않음 (로그인 폼은 제외)
+    if (type !== 'login' && needLogin()) {
+      askLogin();
+      return;
+    }
+
     if (type === 'login') {
       if (!loginState.submitting) void submitLogin(form);
     } else if (type === 'todo-add') {
@@ -1653,7 +1851,7 @@ import { createClient } from '@supabase/supabase-js';
       (db.todos[ui.selected] ||= []).push({ id: uid(), text, done: false });
       saveDB();
       renderMain();
-      focusField('[data-form="todo-add"] input'); // 연속 입력 가능하도록 입력창 유지
+      focusField('[data-form="todo-add"] .todo-input'); // 연속 입력 가능하도록 입력창 유지
     } else if (type === 'todo-edit') {
       const text = form.text.value.trim();
       if (!text) return form.text.focus();
@@ -1663,9 +1861,7 @@ import { createClient } from '@supabase/supabase-js';
       saveDB();
       renderMain();
     } else if (type === 'diary') {
-      const text = form.text.value;
-      if (text.trim()) db.diary[ui.selected] = text;
-      else delete db.diary[ui.selected];
+      setDiary(ui.selected, form.text.value, form.mood.value);
       ui.diaryEditing = false;
       saveDB();
       renderMain();
@@ -1713,7 +1909,11 @@ import { createClient } from '@supabase/supabase-js';
       }
       return;
     }
-    if (ui.todoAdding || ui.todoEditingId || ui.diaryEditing) {
+    if (ui.todoEditingId) {
+      // 할 일 한 줄 수정 중이면 그 수정만 취소 (편집 모드 유지)
+      ui.todoEditingId = null;
+      renderMain();
+    } else if (ui.todoAdding || ui.diaryEditing) {
       resetEditing();
       renderMain();
     }
