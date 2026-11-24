@@ -25,15 +25,15 @@ import { createClient } from '@supabase/supabase-js';
   }
 
   const UPDATED_KEY = STORAGE_KEY + '-updated-at';
+  // 로컬 데이터가 어느 계정 것인지 (계정 id). 다른 계정으로 로그인하면 서버 데이터를 우선한다.
+  const OWNER_KEY = STORAGE_KEY + '-owner';
 
   function createSupabase() {
     const url = import.meta.env.VITE_SUPABASE_URL?.trim() ?? '';
     const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY?.trim() ?? '';
     if (!url || !key) return null;
     try {
-      return createClient(url, key, {
-        auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-      });
+      return createClient(url, key);
     } catch (e) {
       console.warn('Supabase 클라이언트를 만들지 못했습니다.', e);
       return null;
@@ -44,6 +44,127 @@ import { createClient } from '@supabase/supabase-js';
   let remoteReady = false;
   let dirtyDuringLoad = false;
   let pushTimer = null;
+  let hydrateSeq = 0;
+
+  /* =========================================================
+   * 로그인 (Supabase Auth)
+   * Supabase Auth는 이메일로만 계정을 만들 수 있어서, 입력한 아이디를
+   * "아이디@LOGIN_EMAIL_DOMAIN" 내부용 이메일로 바꿔 쓴다. 실제 메일은 보내지 않는다
+   * (대시보드에서 Confirm email 을 꺼 둬야 함).
+   * ========================================================= */
+  const LOGIN_EMAIL_DOMAIN = 'checklog.local';
+  /** 아이디 규칙: 영문 소문자·숫자·밑줄 4~20자 */
+  const USERNAME_PATTERN = /^[a-z0-9_]{4,20}$/;
+
+  let currentUser = null;
+  let authLoading = Boolean(supabase);
+
+  const normalizeUsername = (value) => value.trim().toLowerCase();
+
+  /** 로그인용 이메일. '@'가 들어 있으면 이메일 계정으로 보고 그대로 쓴다 */
+  const loginEmail = (username) => (username.includes('@') ? username : `${username}@${LOGIN_EMAIL_DOMAIN}`);
+
+  /** 화면에 보여줄 아이디 */
+  function usernameOf(user) {
+    const fromMeta = user.user_metadata?.username;
+    if (typeof fromMeta === 'string' && fromMeta) return fromMeta;
+    const email = user.email ?? '';
+    return email.endsWith(`@${LOGIN_EMAIL_DOMAIN}`) ? email.split('@')[0] : email;
+  }
+
+  function authErrorMessage(error) {
+    if (error.code === 'invalid_credentials') return '아이디 또는 비밀번호가 올바르지 않습니다.';
+    if (error.code === 'email_not_confirmed') {
+      return '인증이 완료되지 않은 계정입니다. Supabase에서 Confirm email 설정을 꺼 주세요.';
+    }
+    if (error.code === 'user_already_exists' || error.code === 'email_exists') return '이미 사용 중인 아이디입니다.';
+    if (error.code === 'weak_password') return '비밀번호는 6자 이상으로 입력해 주세요.';
+    if (error.code === 'email_address_invalid') return '사용할 수 없는 아이디입니다.';
+    // Confirm email 이 켜져 있으면 가입할 때마다 메일을 보내려다 발송 한도에 걸린다
+    if (error.code === 'over_email_send_rate_limit') {
+      return '인증 메일 발송 한도를 넘었습니다. Supabase에서 Confirm email 설정을 꺼 주세요.';
+    }
+    if (error.code === 'over_request_rate_limit') return '요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.';
+    return `요청을 처리하지 못했습니다. ${error.message}`;
+  }
+
+  async function ensureProfile(user) {
+    if (!supabase) return;
+    await supabase.from('profiles').upsert({ id: user.id, username: usernameOf(user) });
+  }
+
+  /** 성공하면 '', 실패하면 안내 문구 */
+  async function signIn(rawUsername, password) {
+    if (!supabase) return 'Supabase가 설정되지 않아 로그인할 수 없습니다.';
+    const username = normalizeUsername(rawUsername);
+    const { data, error } = await supabase.auth.signInWithPassword({ email: loginEmail(username), password });
+    if (error) return authErrorMessage(error);
+    if (data.user) await ensureProfile(data.user);
+    return '';
+  }
+
+  /** 세션이 생기면 {}, 확인이 더 필요하면 notice, 실패하면 error */
+  async function signUp(rawUsername, password) {
+    if (!supabase) return { error: 'Supabase가 설정되지 않아 가입할 수 없습니다.' };
+    const username = normalizeUsername(rawUsername);
+    if (!USERNAME_PATTERN.test(username)) {
+      return { error: '아이디는 영문 소문자·숫자·밑줄(_)로 4~20자 입력해 주세요.' };
+    }
+    if (password.length < 6) return { error: '비밀번호는 6자 이상으로 입력해 주세요.' };
+    const { data, error } = await supabase.auth.signUp({
+      email: loginEmail(username),
+      password,
+      options: { data: { username } },
+    });
+    if (error) return { error: authErrorMessage(error) };
+    if (data.user && (data.user.identities?.length ?? 0) === 0) {
+      return { error: '이미 사용 중인 아이디입니다.' };
+    }
+    if (!data.session) {
+      return { notice: '가입은 되었지만 바로 로그인되지 않았습니다. Supabase에서 Confirm email 설정을 꺼 주세요.' };
+    }
+    if (data.user) await ensureProfile(data.user);
+    return {};
+  }
+
+  function clearLocalData() {
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(UPDATED_KEY);
+      localStorage.removeItem(OWNER_KEY);
+    } catch (e) {
+      /* 무시 */
+    }
+    db = emptyDB();
+  }
+
+  function handleSession(session) {
+    const next = session?.user ?? null;
+    const prevId = currentUser?.id ?? null;
+    const wasLoading = authLoading;
+    currentUser = next;
+    authLoading = false;
+    renderAuthSlot();
+
+    // 토큰 갱신 등 같은 계정이면 다시 불러오지 않는다
+    if ((next?.id ?? null) === prevId && !wasLoading) return;
+
+    if (!next) {
+      hydrateSeq += 1;
+      remoteReady = false;
+      clearTimeout(pushTimer);
+      setSyncStatus('');
+      if (prevId) {
+        // 로그아웃하면 이 기기에 남은 계정 데이터를 지운다
+        clearLocalData();
+        resetEditing();
+        if (!routineDraft) route();
+      }
+      return;
+    }
+    if (location.hash === '#/login') location.replace('#/');
+    void hydrateFromSupabase();
+  }
 
   function setSyncStatus(state, detail) {
     const el = document.getElementById('sync-status');
@@ -84,7 +205,7 @@ import { createClient } from '@supabase/supabase-js';
   }
 
   function saveDB() {
-    if (!remoteReady) dirtyDuringLoad = true;
+    if (currentUser && !remoteReady) dirtyDuringLoad = true;
     stampLocal();
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
@@ -95,7 +216,7 @@ import { createClient } from '@supabase/supabase-js';
   }
 
   function schedulePush() {
-    if (!supabase) return;
+    if (!supabase || !currentUser) return;
     clearTimeout(pushTimer);
     pushTimer = setTimeout(() => {
       void pushDB();
@@ -103,11 +224,12 @@ import { createClient } from '@supabase/supabase-js';
   }
 
   async function pushDB() {
-    if (!supabase || !remoteReady) return;
+    if (!supabase || !remoteReady || !currentUser) return;
     setSyncStatus('saving');
     const updatedAt = localStorage.getItem(UPDATED_KEY) || stampLocal();
     const { error } = await supabase.from('planner_state').upsert({
-      id: 'default',
+      id: currentUser.id,
+      user_id: currentUser.id,
       routines: db.routines,
       routine_checks: db.routineChecks,
       todos: db.todos,
@@ -138,14 +260,37 @@ import { createClient } from '@supabase/supabase-js';
     }
   }
 
-  async function hydrateFromSupabase() {
-    if (!supabase) return;
-    setSyncStatus('loading');
-    const { data, error } = await supabase
+  function fetchRemote(uid) {
+    return supabase
       .from('planner_state')
       .select('routines, routine_checks, todos, diary, updated_at')
-      .eq('id', 'default')
+      .eq('user_id', uid)
       .maybeSingle();
+  }
+
+  function setOwner(uid) {
+    try {
+      localStorage.setItem(OWNER_KEY, uid);
+    } catch (e) {
+      /* 무시 */
+    }
+  }
+
+  async function hydrateFromSupabase() {
+    if (!supabase || !currentUser) return;
+    const seq = ++hydrateSeq;
+    const uid = currentUser.id;
+    remoteReady = false;
+    dirtyDuringLoad = false;
+    setSyncStatus('loading');
+
+    let { data, error } = await fetchRemote(uid);
+    if (!error && !data) {
+      // 로그인 기능 이전에 저장된 공용 데이터(id 'default')가 있으면 이 계정으로 가져온다
+      const claim = await supabase.rpc('claim_default_planner');
+      if (!claim.error) ({ data, error } = await fetchRemote(uid));
+    }
+    if (seq !== hydrateSeq) return; // 그 사이 로그아웃/계정 변경
 
     if (error) {
       console.warn('Supabase에서 불러오지 못했습니다.', error.message);
@@ -154,11 +299,20 @@ import { createClient } from '@supabase/supabase-js';
       return;
     }
 
+    let owner = null;
+    try {
+      owner = localStorage.getItem(OWNER_KEY);
+    } catch (e) {
+      /* 무시 */
+    }
+    const sameOwner = owner === uid;
     const localTs = localStorage.getItem(UPDATED_KEY);
     const remoteTs = data?.updated_at || '';
-    const localNewer = Boolean(localTs) && (!remoteTs || new Date(localTs).getTime() > new Date(remoteTs).getTime());
+    const localNewer =
+      sameOwner && Boolean(localTs) && (!remoteTs || new Date(localTs).getTime() > new Date(remoteTs).getTime());
 
     remoteReady = true;
+    setOwner(uid);
 
     if (dirtyDuringLoad || localNewer || !data) {
       if (dirtyDuringLoad || localNewer || hasLocalData(db)) await pushDB();
@@ -202,6 +356,15 @@ import { createClient } from '@supabase/supabase-js';
     const dow = parse(dateStr).getDay();
     return addDays(dateStr, dow === 0 ? -6 : 1 - dow);
   }
+
+  // 월간 현황 아이콘: 달력 틀 + 막대 그래프 (currentColor라 버튼 글자색을 따른다)
+  const STATS_ICON = `
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="3.5" y="5" width="17" height="15.5" rx="3" />
+      <path d="M8 3v4M16 3v4M3.5 9.5h17" />
+      <path d="M8.5 17.5v-2.5M12 17.5v-4.5M15.5 17.5v-3" stroke-width="2.2" />
+    </svg>`;
 
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
@@ -286,7 +449,7 @@ import { createClient } from '@supabase/supabase-js';
           <span class="calendar-month">${month}</span>
           <div class="calendar-tools">
             ${showTodayBtn ? '<button class="today-btn" data-action="go-today">오늘</button>' : ''}
-            <button class="today-btn stats-btn" data-action="open-stats">📊 월간 현황</button>
+            <button class="today-btn stats-btn" data-action="open-stats" aria-label="월간 현황" title="월간 현황">${STATS_ICON}</button>
           </div>
         </div>
         <div class="calendar-row">
@@ -328,7 +491,7 @@ import { createClient } from '@supabase/supabase-js';
         let meta = freqText(r.freq);
         if (r.freq.type === 'weekly') meta += ` · 이번 주 ${weeklyCount(r.id, d)}/${r.freq.times}회`;
         return `
-          <li class="item ${checked ? 'done' : ''}">
+          <li class="item routine-item ${checked ? 'done' : ''}">
             <span class="routine-bar" style="background:${esc(r.color)}"></span>
             <input type="checkbox" data-action="toggle-routine" data-id="${r.id}" ${checked ? 'checked' : ''} aria-label="${esc(r.name)} 완료" />
             ${r.emoji ? `<span class="routine-emoji">${esc(r.emoji)}</span>` : ''}
@@ -371,8 +534,8 @@ import { createClient } from '@supabase/supabase-js';
           <li class="item ${t.done ? 'done' : ''}">
             <input type="checkbox" data-action="toggle-todo" data-id="${t.id}" ${t.done ? 'checked' : ''} aria-label="완료" />
             <span class="text">${esc(t.text)}</span>
-            <button class="btn" data-action="edit-todo" data-id="${t.id}">수정</button>
-            <button class="btn danger" data-action="delete-todo" data-id="${t.id}">삭제</button>
+            <button class="btn sm" data-action="edit-todo" data-id="${t.id}">수정</button>
+            <button class="btn sm danger" data-action="delete-todo" data-id="${t.id}">삭제</button>
           </li>`;
       })
       .join('');
@@ -406,7 +569,7 @@ import { createClient } from '@supabase/supabase-js';
       body = `
         <form class="inline-form col" data-form="diary">
           <textarea class="field" name="text" placeholder="오늘 하루는 어땠나요?">${esc(text)}</textarea>
-          <div style="display:flex;gap:8px">
+          <div style="display:flex;gap:0.5rem">
             <button class="btn" type="button" data-action="cancel-diary">취소</button>
             <button class="btn primary" type="submit">확인</button>
           </div>
@@ -415,7 +578,7 @@ import { createClient } from '@supabase/supabase-js';
       body = `
         <p class="diary-text">${esc(text)}</p>
         <div class="diary-actions">
-          <button class="btn" data-action="edit-diary">수정</button>
+          <button class="btn sm" data-action="edit-diary">수정</button>
         </div>`;
     } else {
       body = '<p class="empty">작성된 일기가 없어요.</p>';
@@ -455,10 +618,16 @@ import { createClient } from '@supabase/supabase-js';
   /* =========================================================
    * 루틴 설정 페이지 렌더링
    * ========================================================= */
-  function openRoutineForm(id) {
+  /**
+   * 루틴 관리 페이지 진입.
+   *  - id 있음: 루틴 수정 팝업 (#/routine/edit/:id)
+   *  - id 없음 + modal: 루틴 추가 팝업 (#/routine/new)
+   *  - id 없음 + !modal: 목록만 (#/routines)
+   */
+  function openRoutineForm(id, { modal = true } = {}) {
     const existing = id ? db.routines.find((r) => r.id === id) : null;
     if (id && !existing) {
-      location.hash = '#/';
+      location.replace('#/routines');
       return;
     }
     routineDraft = existing
@@ -473,9 +642,19 @@ import { createClient } from '@supabase/supabase-js';
         };
     routineDraft.error = '';
     routineDraft.pickerOpen = false;
+    routineDraft.modal = existing ? true : modal;
+    routineDraft.modalEnter = routineDraft.modal; // 처음 열 때만 팝업 애니메이션
     renderRoutineForm();
-    focusField('#routine-name');
+    if (routineDraft.modal) focusField('#routine-name');
   }
+
+  // 순서 변경 손잡이 (점 6개) — 글꼴에 따라 모양이 달라지지 않게 SVG로 그린다
+  const GRIP_ICON = `
+    <svg viewBox="0 0 10 16" width="10" height="16" fill="currentColor" aria-hidden="true">
+      <circle cx="2.5" cy="3" r="1.4" /><circle cx="7.5" cy="3" r="1.4" />
+      <circle cx="2.5" cy="8" r="1.4" /><circle cx="7.5" cy="8" r="1.4" />
+      <circle cx="2.5" cy="13" r="1.4" /><circle cx="7.5" cy="13" r="1.4" />
+    </svg>`;
 
   const EMOJI_GROUPS = [
     { label: '자주 쓰는', list: ['💧', '📚', '🏃', '🧘', '💪', '🥗', '😴', '☀️', '📝', '💊', '🦷', '🧹'] },
@@ -513,27 +692,33 @@ import { createClient } from '@supabase/supabase-js';
 
   // 루틴 설정 페이지 상단: 전체 루틴 목록 (드래그로 순서 변경)
   function renderRoutineSortList(currentId) {
-    if (!db.routines.length) return '';
+    if (!db.routines.length) {
+      return `
+      <section class="section">
+        <div class="section-head">
+          <h2>내 루틴 목록<span class="count">0</span></h2>
+        </div>
+        <p class="empty">등록된 루틴이 없어요.</p>
+      </section>`;
+    }
     return `
       <section class="section">
         <div class="section-head">
-          <h2>내 루틴<span class="count">${db.routines.length}</span></h2>
-          <span class="hint" style="margin:0">⋮⋮ 를 끌어서 순서 변경</span>
+          <h2>내 루틴 목록<span class="count">${db.routines.length}</span></h2>
+          <span class="hint sort-hint" style="margin:0">${GRIP_ICON}를 끌어서 순서 변경</span>
         </div>
         <ul class="list sort-list">
           ${db.routines
             .map(
               (rt) => `
               <li class="item sort-item ${rt.id === currentId ? 'current' : ''}" data-id="${rt.id}">
-                <span class="drag-handle" aria-label="순서 변경">⋮⋮</span>
+                <span class="drag-handle" aria-label="순서 변경">${GRIP_ICON}</span>
                 <span class="routine-bar" style="background:${esc(rt.color)}"></span>
                 <button type="button" class="sort-body" data-action="open-routine" data-id="${rt.id}">
                   ${rt.emoji ? `<span class="routine-emoji">${esc(rt.emoji)}</span>` : ''}
-                  <span class="text">
-                    <span class="sort-name">${esc(rt.name)}</span>
-                    <span class="routine-meta">${esc(freqText(rt.freq))}</span>
-                  </span>
+                  <span class="sort-name">${esc(rt.name)}</span>
                   ${rt.id === currentId ? '<span class="badge">수정 중</span>' : ''}
+                  <span class="routine-meta">${esc(freqText(rt.freq))}</span>
                 </button>
               </li>`
             )
@@ -588,15 +773,18 @@ import { createClient } from '@supabase/supabase-js';
     const isEdit = !!r.id;
     const weekOrder = [1, 2, 3, 4, 5, 6, 0];
 
-    view.innerHTML = `
+    // 루틴 관리 페이지에서는 header의 CheckLog 제목 자리에 뒤로가기 + 페이지 제목을 둔다
+    setHeaderTitle(`
       <div class="page-title">
         <button class="back-btn" data-action="routine-cancel" aria-label="뒤로가기">&lsaquo;</button>
-        <h2>${isEdit ? '루틴 수정' : '새 루틴'}</h2>
-      </div>
+        <h2>루틴 관리</h2>
+      </div>`);
 
-      ${renderRoutineSortList(r.id)}
-
-      <form class="section" data-form="routine" novalidate>
+    const form = `
+      <form class="routine-modal-form" data-form="routine" novalidate>
+        <div class="section-head">
+          <h2 id="routine-form-title">${isEdit ? '루틴 수정' : '루틴 추가'}</h2>
+        </div>
         <div class="form-group">
           <label for="routine-name">루틴명 <span class="req">*</span></label>
           <div class="name-row">
@@ -660,10 +848,30 @@ import { createClient } from '@supabase/supabase-js';
 
         <div class="form-actions">
           ${isEdit ? '<button type="button" class="btn lg danger" data-action="routine-delete">삭제</button><span class="spacer"></span>' : ''}
-          <button type="button" class="btn lg" data-action="routine-cancel">취소</button>
+          <button type="button" class="btn lg" data-action="routine-close">취소</button>
           <button type="submit" class="btn lg primary">저장</button>
         </div>
       </form>`;
+
+    const modal = r.modal
+      ? `
+      <div class="modal-backdrop routine-modal-backdrop ${r.modalEnter ? 'enter' : ''}">
+        <div class="modal routine-modal" role="dialog" aria-modal="true" aria-labelledby="routine-form-title">
+          ${form}
+        </div>
+      </div>`
+      : '';
+    r.modalEnter = false;
+    document.body.classList.toggle('modal-open', !!r.modal);
+
+    view.innerHTML = `
+      ${renderRoutineSortList(r.id)}
+      ${modal}`;
+  }
+
+  /** 루틴 추가·수정 팝업을 닫고 목록만 있는 루틴 관리 화면으로 */
+  function closeRoutineEditor() {
+    location.replace('#/routines');
   }
 
   function leaveRoutineForm() {
@@ -676,6 +884,7 @@ import { createClient } from '@supabase/supabase-js';
    * 월간 현황 페이지 (#/stats)
    * ========================================================= */
   let statsMonth = null; // 'YYYY-MM'
+  let statsTab = 'all'; // 'all' | 'routine' | 'todo' | 'diary'
 
   function monthDays(ym) {
     const [y, m] = ym.split('-').map(Number);
@@ -691,22 +900,96 @@ import { createClient } from '@supabase/supabase-js';
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
   }
 
-  // 루틴 하나의 월간 통계: 목표 횟수는 오늘까지(미래 제외) 기준
+  // 빈도만 보고 그 날 해야 하는 루틴인지 (시작일과 무관 — 월간 목표 계산용)
+  function routineDueByFreq(r, dateStr) {
+    if (r.freq.type === 'days') return r.freq.days.includes(parse(dateStr).getDay());
+    return true; // daily, weekly
+  }
+
+  // 루틴 하나의 월간 통계: 목표 횟수는 그 달 전체 기준
+  // (매일 = 그 달 일수, 요일 선택 = 그 달에 해당 요일 수, 주 N회 = N × 일수 / 7)
   function routineMonthStats(r, ym) {
-    const today = todayStr();
     const days = monthDays(ym);
-    const elapsed = days.filter((d) => d <= today && routineAppliesTo(r, d));
+    const due = days.filter((d) => routineDueByFreq(r, d));
     const done = days.filter((d) => isChecked(r.id, d)).length;
 
-    let target;
-    if (r.freq.type === 'weekly') {
-      target = elapsed.length ? Math.max(1, Math.round((r.freq.times * elapsed.length) / 7)) : 0;
-    } else {
-      target = elapsed.length;
-    }
+    const target =
+      r.freq.type === 'weekly' ? Math.max(1, Math.round((r.freq.times * days.length) / 7)) : due.length;
     const rate = target ? Math.min(100, Math.round((done / target) * 100)) : null;
     return { days, done, target, rate };
   }
+
+  // 하루 단위 집계 (종합 달력용)
+  function dayStats(dateStr) {
+    // 루틴: 그 날 해야 하는 루틴(매일·요일) 중 체크한 비율. 주 N회 루틴은 체크한 날만 분모에 넣는다.
+    const due = db.routines.filter(
+      (r) => routineAppliesTo(r, dateStr) && (r.freq.type !== 'weekly' || isChecked(r.id, dateStr))
+    );
+    const routineDone = due.filter((r) => isChecked(r.id, dateStr)).length;
+    const todos = db.todos[dateStr] || [];
+    const todoDone = todos.filter((t) => t.done).length;
+    return {
+      routineRate: due.length ? Math.round((routineDone / due.length) * 100) : null,
+      routineText: `${routineDone}/${due.length}`,
+      todoRate: todos.length ? Math.round((todoDone / todos.length) * 100) : null,
+      todoText: `${todoDone}/${todos.length}`,
+      diary: Boolean((db.diary[dateStr] || '').trim()),
+    };
+  }
+
+  // 종합: 그 달 달력에 날마다 루틴·할 일 달성률, 일기 작성 여부 표시
+  function renderMonthCalendar(ym) {
+    const today = todayStr();
+    const days = monthDays(ym);
+    const lead = parse(days[0]).getDay(); // 일요일 시작
+    const blanks = Array.from({ length: lead }, () => '<div class="mcal-cell blank"></div>').join('');
+    const pct = (n) => `${n}<small>%</small>`;
+
+    const cells = days
+      .map((d) => {
+        const dow = parse(d).getDay();
+        const s = dayStats(d);
+        const tip = [
+          dayLabel(d),
+          s.routineRate !== null ? `루틴 ${s.routineText} (${s.routineRate}%)` : '',
+          s.todoRate !== null ? `할 일 ${s.todoText} (${s.todoRate}%)` : '',
+          s.diary ? '일기 작성' : '',
+        ]
+          .filter(Boolean)
+          .join('\n');
+        return `
+          <div class="mcal-cell ${d === today ? 'today' : ''} ${d > today ? 'future' : ''} ${dow === 0 ? 'sun' : dow === 6 ? 'sat' : ''}" title="${tip}">
+            <div class="mcal-top">
+              <span class="mcal-date">${Number(d.slice(8))}</span>
+              ${s.diary ? `<span class="mcal-diary" aria-label="일기 작성">${DIARY_ICON}</span>` : ''}
+            </div>
+            ${s.routineRate !== null ? `<span class="mcal-rate routine" style="--p:${s.routineRate}%">${pct(s.routineRate)}</span>` : ''}
+            ${s.todoRate !== null ? `<span class="mcal-rate todo" style="--p:${s.todoRate}%">${pct(s.todoRate)}</span>` : ''}
+          </div>`;
+      })
+      .join('');
+
+    return `
+      <section class="section">
+        <div class="section-head"><h2>월간 달력</h2></div>
+        <div class="mcal">
+          ${WEEKDAYS.map((w, i) => `<div class="mcal-wd ${i === 0 ? 'sun' : i === 6 ? 'sat' : ''}">${w}</div>`).join('')}
+          ${blanks}${cells}
+        </div>
+        <div class="mcal-legend">
+          <span><i class="mcal-key routine"></i>루틴 달성률</span>
+          <span><i class="mcal-key todo"></i>할 일 달성률</span>
+          <span><span class="mcal-diary">${DIARY_ICON}</span>일기 작성</span>
+        </div>
+      </section>`;
+  }
+
+  // 일기 작성 표시 아이콘 (연필)
+  const DIARY_ICON = `
+    <svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M10.5 2.5l3 3L6 13H3v-3z" /><path d="M9 4l3 3" />
+    </svg>`;
 
   function renderStats() {
     const ym = statsMonth;
@@ -717,8 +1000,6 @@ import { createClient } from '@supabase/supabase-js';
     const rows = db.routines.map((r) => ({ r, s: routineMonthStats(r, ym) }));
     const rated = rows.filter((x) => x.s.rate !== null);
     const avg = rated.length ? Math.round(rated.reduce((a, x) => a + x.s.rate, 0) / rated.length) : null;
-    const totalDone = rows.reduce((a, x) => a + x.s.done, 0);
-    const totalTarget = rows.reduce((a, x) => a + x.s.target, 0);
 
     const list = rows
       .map(({ r, s }) => {
@@ -727,7 +1008,7 @@ import { createClient } from '@supabase/supabase-js';
           .map((d) => {
             const cls = isChecked(r.id, d)
               ? 'on'
-              : d > today || !routineAppliesTo(r, d)
+              : d > today || !routineDueByFreq(r, d)
                 ? 'off'
                 : 'miss';
             return `<span class="cell ${cls}" title="${d}"></span>`;
@@ -752,10 +1033,52 @@ import { createClient } from '@supabase/supabase-js';
       })
       .join('');
 
-    view.innerHTML = `
+    // 루틴 관리 페이지와 같이 header 제목 자리에 뒤로가기 + 페이지 제목을 둔다
+    setHeaderTitle(`
       <div class="page-title">
         <button class="back-btn" data-action="stats-back" aria-label="뒤로가기">&lsaquo;</button>
         <h2>월간 현황</h2>
+      </div>`);
+
+    // 할 일 · 일기 집계
+    const todoAll = Object.keys(db.todos)
+      .filter((d) => d.startsWith(ym + '-'))
+      .flatMap((d) => db.todos[d] || []);
+    const todoDone = todoAll.filter((t) => t.done).length;
+    const todoRate = todoAll.length ? Math.round((todoDone / todoAll.length) * 100) : null;
+    const diaryCount = Object.keys(db.diary).filter((d) => d.startsWith(ym + '-') && (db.diary[d] || '').trim()).length;
+
+    const cell = (label, value) => `<div><span class="routine-meta">${label}</span><strong>${value}</strong></div>`;
+    const avgText = avg === null ? '-' : avg + '%';
+    const summaryCells = {
+      all: [
+        cell('루틴 달성률', avgText),
+        cell('루틴 수', `${db.routines.length}개`),
+        cell('할 일 (작성 / 완료)', `${todoAll.length} / ${todoDone}`),
+        cell('작성한 일기', `${diaryCount}개`),
+      ],
+      routine: [cell('루틴 달성률', avgText), cell('루틴 수', `${db.routines.length}개`)],
+      todo: [
+        cell('할 일 달성률', todoRate === null ? '-' : todoRate + '%'),
+        cell('작성한 할 일', `${todoAll.length}개`),
+        cell('완료한 할 일', `${todoDone}개`),
+      ],
+      diary: [cell('작성한 일기', `${diaryCount}개`)],
+    }[statsTab];
+
+    const TABS = [
+      ['all', '종합'],
+      ['routine', '루틴'],
+      ['todo', '할 일'],
+      ['diary', '일기'],
+    ];
+
+    view.innerHTML = `
+      <div class="segmented stats-tabs" role="tablist">
+        ${TABS.map(
+          ([key, label]) => `<button type="button" role="tab" aria-selected="${statsTab === key}"
+                               class="${statsTab === key ? 'on' : ''}" data-action="stats-tab" data-tab="${key}">${label}</button>`
+        ).join('')}
       </div>
 
       <section class="section">
@@ -764,13 +1087,22 @@ import { createClient } from '@supabase/supabase-js';
           <strong>${y}년 ${m}월</strong>
           <button class="nav-btn sm" data-action="stats-month" data-delta="1" aria-label="다음 달">&rsaquo;</button>
         </div>
-        <div class="summary">
-          <div><span class="routine-meta">평균 달성률</span><strong>${avg === null ? '-' : avg + '%'}</strong></div>
-          <div><span class="routine-meta">완료 / 목표</span><strong>${totalDone} / ${totalTarget}</strong></div>
-          <div><span class="routine-meta">루틴 수</span><strong>${db.routines.length}개</strong></div>
+        <div class="summary" style="--cols:${summaryCells.length}${summaryCells.length > 3 ? ';--cols-sm:2' : ''}">
+          ${summaryCells.join('')}
         </div>
       </section>
 
+      ${
+        {
+          all: () => renderMonthCalendar(ym),
+          routine: renderMonthRoutines,
+          todo: () => renderMonthTodos(ym),
+          diary: () => renderMonthDiary(ym),
+        }[statsTab]()
+      }`;
+
+    function renderMonthRoutines() {
+      return `
       <section class="section">
         <div class="section-head"><h2>루틴별 달성률</h2></div>
         ${
@@ -780,22 +1112,304 @@ import { createClient } from '@supabase/supabase-js';
               ? `<p class="empty">아직 오지 않은 달이에요.</p><ul class="list">${list}</ul>`
               : `<ul class="list">${list}</ul>`
         }
-        <p class="hint">달성률은 오늘까지 해야 했던 횟수 기준이에요. 주 N회 루틴은 주 단위 목표를 날짜 수에 맞춰 계산해요.</p>
+        <p class="hint">달성률은 그 달 전체에 해야 하는 횟수 기준이에요. <br>주 N회 루틴은 주 단위 목표를 그 달 날짜 수에 맞춰 계산해요.</p>
+      </section>`;
+    }
+  }
+
+  // 'YYYY-MM-DD' → '11월 3일 (월)'
+  function dayLabel(dateStr) {
+    const d = parse(dateStr);
+    return `${d.getMonth() + 1}월 ${d.getDate()}일 (${WEEKDAYS[d.getDay()]})`;
+  }
+
+  // 날짜 머리줄 (표시만)
+  function statsDayHead(dateStr, extra = '') {
+    const dow = parse(dateStr).getDay();
+    return `
+      <div class="stats-day-head ${dow === 0 ? 'sun' : dow === 6 ? 'sat' : ''}">
+        <span class="stats-day-label">${dayLabel(dateStr)}</span>
+        ${extra}
+      </div>`;
+  }
+
+  // 그 달에 쓴 할 일 (날짜순)
+  function renderMonthTodos(ym) {
+    const dates = Object.keys(db.todos)
+      .filter((d) => d.startsWith(ym + '-') && (db.todos[d] || []).length)
+      .sort();
+    const all = dates.flatMap((d) => db.todos[d]);
+    const doneCount = all.filter((t) => t.done).length;
+
+    const body = dates.length
+      ? `<ul class="stats-days">
+          ${dates
+            .map((d) => {
+              const todos = db.todos[d];
+              const done = todos.filter((t) => t.done).length;
+              const rate = Math.round((done / todos.length) * 100);
+              return `
+                <li class="stats-day">
+                  ${statsDayHead(d, `<span class="routine-meta stats-day-count">${done}/${todos.length} · ${rate}%</span>`)}
+                  <div class="progress todo-progress"><span style="width:${rate}%"></span></div>
+                  <ul class="stats-todo-list">
+                    ${todos
+                      .map(
+                        (t) => `
+                        <li class="stats-todo ${t.done ? 'done' : ''}">
+                          <span class="stats-check" aria-label="${t.done ? '완료' : '미완료'}">${t.done ? '✓' : ''}</span>
+                          <span class="text">${esc(t.text)}</span>
+                        </li>`
+                      )
+                      .join('')}
+                  </ul>
+                </li>`;
+            })
+            .join('')}
+        </ul>`
+      : '<p class="empty">이 달에 쓴 할 일이 없어요.</p>';
+
+    return `
+      <section class="section">
+        <div class="section-head">
+          <h2>할 일</h2>
+        </div>
+        ${
+          all.length
+            ? `<div class="progress todo-progress todo-progress--total"><span style="width:${Math.round((doneCount / all.length) * 100)}%"></span></div>`
+            : ''
+        }
+        ${body}
+      </section>`;
+  }
+
+  // 그 달에 쓴 일기 (날짜순)
+  function renderMonthDiary(ym) {
+    const dates = Object.keys(db.diary)
+      .filter((d) => d.startsWith(ym + '-') && (db.diary[d] || '').trim())
+      .sort();
+
+    const body = dates.length
+      ? `<ul class="stats-days">
+          ${dates
+            .map(
+              (d) => `
+              <li class="stats-day stats-diary-row">
+                ${statsDayHead(d)}
+                <p class="stats-diary" title="${esc(db.diary[d])}">${esc(db.diary[d].replace(/\s*\n\s*/g, ' '))}</p>
+              </li>`
+            )
+            .join('')}
+        </ul>`
+      : '<p class="empty">이 달에 쓴 일기가 없어요.</p>';
+
+    return `
+      <section class="section">
+        <div class="section-head">
+          <h2>일기</h2>
+        </div>
+        ${body}
       </section>`;
   }
 
   /* =========================================================
-   * 라우팅 (해시 기반: #/, #/routine/new, #/routine/edit/:id, #/stats)
+   * 라우팅 (해시 기반: #/, #/routines, #/routine/new, #/routine/edit/:id, #/stats)
    * ========================================================= */
+  /* =========================================================
+   * 모달 (window.alert / confirm 대신 사용)
+   * showDialog({ message, title?, confirmText?, cancelText?, danger? }) → Promise<boolean>
+   * cancelText가 없으면 확인 버튼만 있는 알림창이 된다.
+   * ========================================================= */
+  function showDialog({ message, title = '', confirmText = '확인', cancelText = '', danger = false }) {
+    return new Promise((resolve) => {
+      const prevFocus = document.activeElement;
+      const backdrop = document.createElement('div');
+      backdrop.className = 'modal-backdrop';
+      backdrop.innerHTML = `
+        <div class="modal" role="${cancelText ? 'dialog' : 'alertdialog'}" aria-modal="true" aria-labelledby="modal-message">
+          ${title ? `<h3 class="modal-title">${esc(title)}</h3>` : ''}
+          <p class="modal-message" id="modal-message">${esc(message)}</p>
+          <div class="modal-actions">
+            ${cancelText ? `<button type="button" class="btn lg" data-modal="cancel">${esc(cancelText)}</button>` : ''}
+            <button type="button" class="btn lg ${danger ? 'danger-fill' : 'primary'}" data-modal="ok">${esc(confirmText)}</button>
+          </div>
+        </div>`;
+
+      const close = (result) => {
+        document.removeEventListener('keydown', onKey, true);
+        backdrop.remove();
+        if (prevFocus && typeof prevFocus.focus === 'function' && prevFocus.isConnected) prevFocus.focus();
+        resolve(result);
+      };
+      const onKey = (e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          close(false);
+        } else if (e.key === 'Tab') {
+          // 포커스를 모달 안에 가둔다
+          const btns = [...backdrop.querySelectorAll('button')];
+          const i = btns.indexOf(document.activeElement);
+          e.preventDefault();
+          btns[(i + (e.shiftKey ? btns.length - 1 : 1)) % btns.length].focus();
+        }
+      };
+      backdrop.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-modal]');
+        if (btn) close(btn.dataset.modal === 'ok');
+        else if (e.target === backdrop) close(false);
+      });
+      document.addEventListener('keydown', onKey, true);
+      document.body.appendChild(backdrop);
+      backdrop.querySelector('[data-modal="ok"]').focus();
+    });
+  }
+
+  let toastTimer = null;
+  function showToast(message) {
+    let el = document.getElementById('toast');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'toast';
+      el.className = 'toast';
+      el.setAttribute('role', 'status');
+      document.body.appendChild(el);
+    }
+    el.textContent = message;
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), 1800);
+  }
+
+  /* =========================================================
+   * 로그인 페이지 / header 로그인 버튼
+   * ========================================================= */
+  const authSlot = document.getElementById('auth-slot');
+  let loginState = null; // { mode: 'signIn' | 'signUp', username, password, error, notice, submitting }
+
+  function renderAuthSlot() {
+    if (!authSlot) return;
+    if (/^#\/routine/.test(location.hash)) {
+      // 루틴 관리 페이지: 로그인/로그아웃 자리에 루틴 추가 버튼
+      authSlot.innerHTML = `<button type="button" class="btn primary" data-action="routine-add">+ 루틴 추가</button>`;
+    } else if (authLoading) {
+      authSlot.innerHTML = '';
+    } else if (currentUser) {
+      authSlot.innerHTML = `<button type="button" class="btn auth-btn" data-action="sign-out" title="${esc(usernameOf(currentUser))}">로그아웃</button>`;
+    } else {
+      authSlot.innerHTML = `<a href="#/login" class="btn auth-btn">로그인</a>`;
+    }
+  }
+
+  function renderLogin() {
+    const s = loginState;
+    const signUpMode = s.mode === 'signUp';
+    view.innerHTML = `
+      <div class="login-card">
+        <a href="#/" class="back-link">← 체크로그</a>
+        <h1>${signUpMode ? '회원가입' : '로그인'}</h1>
+        ${supabase ? '' : '<p class="form-error" role="alert">Supabase가 설정되지 않아 로그인할 수 없습니다.</p>'}
+        <form class="login-form" data-form="login" novalidate>
+          <label>
+            <span>아이디</span>
+            <input name="username" class="field" value="${esc(s.username)}"
+              placeholder="${signUpMode ? '영문 소문자·숫자·밑줄 4~20자' : '아이디'}"
+              autocomplete="username" autocapitalize="none" spellcheck="false" required />
+          </label>
+          <label>
+            <span>비밀번호</span>
+            <input name="password" type="password" class="field" value="${esc(s.password)}"
+              autocomplete="${signUpMode ? 'new-password' : 'current-password'}" required />
+          </label>
+          ${s.error ? `<p class="form-error">${esc(s.error)}</p>` : ''}
+          ${s.notice ? `<p class="login-card__note">${esc(s.notice)}</p>` : ''}
+          <button type="submit" class="btn primary lg" ${s.submitting || !supabase ? 'disabled' : ''}>
+            ${s.submitting ? '처리 중…' : signUpMode ? '가입하기' : '로그인'}
+          </button>
+        </form>
+        <button type="button" class="login-card__switch" data-action="login-switch">
+          ${signUpMode ? '이미 계정이 있으면 로그인' : '계정이 없으면 회원가입'}
+        </button>
+      </div>`;
+  }
+
+  async function submitLogin(form) {
+    const s = loginState;
+    s.username = form.username.value;
+    s.password = form.password.value;
+    if (!s.username.trim() || !s.password) {
+      s.error = '아이디와 비밀번호를 입력해 주세요.';
+      renderLogin();
+      return;
+    }
+    s.submitting = true;
+    s.error = '';
+    s.notice = '';
+    renderLogin();
+
+    if (s.mode === 'signUp') {
+      const result = await signUp(s.username, s.password);
+      s.submitting = false;
+      if (result.error) s.error = result.error;
+      else if (result.notice) {
+        s.notice = result.notice;
+        s.mode = 'signIn';
+      } else return; // 세션이 생기면 handleSession이 메인으로 보낸다
+    } else {
+      const message = await signIn(s.username, s.password);
+      s.submitting = false;
+      if (!message) return;
+      s.error = message;
+    }
+    if (loginState === s && location.hash === '#/login') renderLogin();
+  }
+
+  /* header 왼쪽 제목 영역. html이 없으면 기본 CheckLog 제목 */
+  const headerTitle = document.getElementById('header-title');
+  const DEFAULT_HEADER_TITLE = '<h1>CheckLog</h1>';
+  function setHeaderTitle(html) {
+    if (!headerTitle) return;
+    const next = html || DEFAULT_HEADER_TITLE;
+    if (headerTitle.innerHTML !== next) headerTitle.innerHTML = next;
+  }
+
+  headerTitle?.addEventListener('click', (e) => {
+    if (e.target.closest('[data-action="routine-cancel"]') && routineDraft) leaveRoutineForm();
+    else if (e.target.closest('[data-action="stats-back"]') && statsMonth) leaveStats();
+  });
+
+  function leaveStats() {
+    statsMonth = null;
+    statsTab = 'all';
+    if (cameFromMain) history.back();
+    else location.hash = '#/';
+  }
+
   function route() {
     const hash = location.hash.replace(/^#/, '') || '/';
     let m;
-    if (hash === '/stats') {
+    document.body.dataset.route = hash === '/login' ? 'login' : '';
+    setHeaderTitle(null);
+    document.body.classList.remove('modal-open');
+    if (hash !== '/login') loginState = null;
+    if (hash === '/login') {
+      if (currentUser) {
+        location.replace('#/');
+        return;
+      }
+      routineDraft = null;
+      statsMonth = null;
+      loginState ||= { mode: 'signIn', username: '', password: '', error: '', notice: '', submitting: false };
+      renderLogin();
+      focusField('.login-form input[name="username"]');
+    } else if (hash === '/stats') {
       routineDraft = null;
       if (!statsMonth) statsMonth = ui.selected.slice(0, 7);
       renderStats();
+    } else if (hash === '/routines') {
+      openRoutineForm(null, { modal: false });
     } else if (hash === '/routine/new') {
-      openRoutineForm(null);
+      openRoutineForm(null, { modal: true });
     } else if ((m = hash.match(/^\/routine\/edit\/([\w-]+)$/))) {
       openRoutineForm(m[1]);
     } else {
@@ -804,6 +1418,7 @@ import { createClient } from '@supabase/supabase-js';
       statsMonth = null;
       renderMain();
     }
+    renderAuthSlot();
     window.scrollTo(0, 0);
   }
 
@@ -846,7 +1461,7 @@ import { createClient } from '@supabase/supabase-js';
 
       /* --- 루틴 --- */
       case 'new-routine':
-        goRoutine('/routine/new');
+        goRoutine('/routines');
         break;
       case 'edit-routine':
         goRoutine(`/routine/edit/${id}`);
@@ -890,13 +1505,19 @@ import { createClient } from '@supabase/supabase-js';
         ui.todoEditingId = null;
         renderMain();
         break;
-      case 'delete-todo':
-        if (!confirm('이 할 일을 삭제할까요?')) break;
-        db.todos[ui.selected] = (db.todos[ui.selected] || []).filter((x) => x.id !== id);
-        if (!db.todos[ui.selected].length) delete db.todos[ui.selected];
-        saveDB();
-        renderMain();
+      case 'delete-todo': {
+        const date = ui.selected;
+        void showDialog({ message: '이 할 일을 삭제할까요?', confirmText: '삭제', cancelText: '취소', danger: true }).then(
+          (ok) => {
+            if (!ok) return;
+            db.todos[date] = (db.todos[date] || []).filter((x) => x.id !== id);
+            if (!db.todos[date].length) delete db.todos[date];
+            saveDB();
+            if (!routineDraft && !statsMonth && !loginState) renderMain();
+          }
+        );
         break;
+      }
 
       /* --- 일기 --- */
       case 'edit-diary':
@@ -909,6 +1530,14 @@ import { createClient } from '@supabase/supabase-js';
         renderMain();
         break;
 
+      /* --- 로그인 --- */
+      case 'login-switch':
+        loginState.mode = loginState.mode === 'signUp' ? 'signIn' : 'signUp';
+        loginState.error = '';
+        loginState.notice = '';
+        renderLogin();
+        break;
+
       /* --- 루틴 설정 페이지 --- */
       /* --- 월간 현황 --- */
       case 'open-stats':
@@ -918,10 +1547,12 @@ import { createClient } from '@supabase/supabase-js';
         statsMonth = shiftMonth(statsMonth, Number(el.dataset.delta));
         renderStats();
         break;
+      case 'stats-tab':
+        statsTab = el.dataset.tab;
+        renderStats();
+        break;
       case 'stats-back':
-        statsMonth = null;
-        if (cameFromMain) history.back();
-        else location.hash = '#/';
+        leaveStats();
         break;
 
       case 'open-routine':
@@ -963,16 +1594,31 @@ import { createClient } from '@supabase/supabase-js';
       case 'routine-cancel':
         leaveRoutineForm();
         break;
+      case 'routine-add':
+        // 루틴 페이지 안에서의 이동은 히스토리를 쌓지 않음
+        location.replace('#/routine/new');
+        break;
+      case 'routine-close':
+        closeRoutineEditor();
+        break;
       case 'routine-delete': {
-        if (!confirm('이 루틴을 삭제할까요? 완료 기록도 함께 삭제됩니다.')) break;
         const rid = routineDraft.id;
-        db.routines = db.routines.filter((r) => r.id !== rid);
-        Object.keys(db.routineChecks).forEach((k) => {
-          db.routineChecks[k] = db.routineChecks[k].filter((x) => x !== rid);
-          if (!db.routineChecks[k].length) delete db.routineChecks[k];
+        void showDialog({
+          message: '이 루틴을 삭제할까요?\n완료 기록도 함께 삭제됩니다.',
+          confirmText: '삭제',
+          cancelText: '취소',
+          danger: true,
+        }).then((ok) => {
+          if (!ok || !routineDraft || routineDraft.id !== rid) return;
+          db.routines = db.routines.filter((r) => r.id !== rid);
+          Object.keys(db.routineChecks).forEach((k) => {
+            db.routineChecks[k] = db.routineChecks[k].filter((x) => x !== rid);
+            if (!db.routineChecks[k].length) delete db.routineChecks[k];
+          });
+          saveDB();
+          closeRoutineEditor();
+          showToast('루틴을 삭제했어요.');
         });
-        saveDB();
-        leaveRoutineForm();
         break;
       }
     }
@@ -999,7 +1645,9 @@ import { createClient } from '@supabase/supabase-js';
     e.preventDefault();
     const type = form.dataset.form;
 
-    if (type === 'todo-add') {
+    if (type === 'login') {
+      if (!loginState.submitting) void submitLogin(form);
+    } else if (type === 'todo-add') {
       const text = form.text.value.trim();
       if (!text) return form.text.focus();
       (db.todos[ui.selected] ||= []).push({ id: uid(), text, done: false });
@@ -1030,31 +1678,63 @@ import { createClient } from '@supabase/supabase-js';
         return focusField('#routine-name');
       }
       if (r.freq.type === 'days' && !r.freq.days.length) {
-        alert('반복할 요일을 하나 이상 선택해주세요.');
+        void showDialog({ message: '반복할 요일을 하나 이상 선택해주세요.' });
         return;
       }
       const data = { emoji: r.emoji || '', name: r.name, color: r.color, freq: r.freq, memo: r.memo.trim() };
+      r.error = '';
       if (r.id) {
         const target = db.routines.find((x) => x.id === r.id);
         Object.assign(target, data);
+        saveDB();
+        // 수정 팝업을 닫고 루틴 관리 목록에 남는다 (목록에 바뀐 내용이 바로 반영됨)
+        closeRoutineEditor();
+        showToast('루틴을 저장했어요.');
       } else {
         db.routines.push({ id: uid(), ...data, startDate: todayStr() });
+        saveDB();
+        // 추가 팝업을 닫고 루틴 관리 목록에 남는다
+        closeRoutineEditor();
+        showToast('루틴을 추가했어요.');
       }
-      saveDB();
-      leaveRoutineForm();
     }
   });
 
   // ESC로 인라인 입력 취소
   view.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape' || routineDraft) return;
+    if (e.key !== 'Escape') return;
+    if (routineDraft) {
+      // 루틴 추가·수정 팝업: ESC로 닫기 (이모지 선택창이 열려 있으면 그것만 닫기)
+      if (routineDraft.pickerOpen) {
+        routineDraft.pickerOpen = false;
+        renderRoutineForm();
+      } else if (routineDraft.modal) {
+        closeRoutineEditor();
+      }
+      return;
+    }
     if (ui.todoAdding || ui.todoEditingId || ui.diaryEditing) {
       resetEditing();
       renderMain();
     }
   });
 
+  authSlot?.addEventListener('click', (e) => {
+    if (e.target.closest('[data-action="routine-add"]')) {
+      location.replace('#/routine/new');
+      return;
+    }
+    if (!e.target.closest('[data-action="sign-out"]') || !supabase) return;
+    void supabase.auth.signOut();
+  });
+
   window.addEventListener('hashchange', route);
   route();
-  void hydrateFromSupabase();
+  renderAuthSlot();
+  if (supabase) {
+    // INITIAL_SESSION 포함. 콜백 안에서 supabase 호출을 기다리면 교착되므로 다음 틱으로 미룬다
+    supabase.auth.onAuthStateChange((_event, session) => {
+      setTimeout(() => handleSession(session), 0);
+    });
+  }
 })();
