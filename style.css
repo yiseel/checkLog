@@ -338,13 +338,6 @@ body[data-route="login"] .app-header { display: none; }
 .btn.lg:hover { transform: translateY(-0.0625rem); }
 .btn.lg:active { transform: translateY(0); }
 
-.inline-form {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0.5rem 0;
-}
-.inline-form.col { flex-direction: column; align-items: flex-end; }
-
 .field {
   flex: 1;
   width: 100%;
@@ -645,26 +638,11 @@ body.modal-open { overflow: hidden; }
 }
 .stats-todo.done .stats-check { background: var(--gold); border-color: var(--gold); color: var(--primary-ink); }
 
-/* 일기: 날짜 + 내용 한 줄, 넘치면 ... */
-.stats-diary-row { display: flex; align-items: center; gap: 0.75rem; }
-.stats-diary-row .stats-day-head { flex: none; margin: 0; }
-.stats-diary {
-  flex: 1;
-  min-width: 0;
-  margin: 0;
-  padding: 0.375rem 0.625rem;
-  border-radius: 0.625rem;
-  background: rgba(248, 229, 186, 0.35);
-  font-size: 0.875rem;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 /* 월간 현황 상단 탭 (종합 / 루틴 / 할 일 / 일기) */
 .stats-tabs { margin-bottom: 0.875rem; }
 .stats-tabs + .section { margin-top: 0; }
-
+/* header 안에 들어간 탭(스크롤해도 고정): 아래 여백은 header 패딩이 담당 */
+.app-header__sub .stats-tabs { margin-bottom: 0; }
 /* summary 값은 오른쪽 정렬 */
 .summary strong { align-self: flex-end; text-align: right; }
 
@@ -855,35 +833,128 @@ body.modal-open { overflow: hidden; }
 .todo-total .todo-progress--total { margin: 0; background: rgba(255, 255, 255, 0.8); }
 .todo-total .todo-progress--total span { background: #6fae7b; }
 
-/* ---------- 현황 일기: 일주일씩 한 줄 ---------- */
-.dweeks { display: grid; }
+/* ---------- 현황 일기: 위클리 플래너 (주마다 카드, 하루 한 줄) ---------- */
+.dweeks { display: grid; gap: 0.75rem; }
 .dweek {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 0.25rem;
-  padding: 0.5rem 0;
-  border-top: 1px solid var(--line);
+  border: 1px solid var(--line);
+  border-radius: 0.875rem;
+  overflow: hidden;
+  background: var(--surface);
 }
-.dweek:first-child { border-top: none; padding-top: 0; }
-.dweek-cell {
-  min-width: 0;
+.dweek-head {
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.125rem;
-  padding: 0.3125rem 0;
-  border-radius: 0.625rem;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: linear-gradient(90deg, rgba(248, 229, 186, 0.55), rgba(248, 229, 186, 0.2));
+  border-bottom: 1px solid var(--line);
 }
-.dweek-cell.blank { visibility: hidden; }
-.dweek-cell.has { background: rgba(248, 229, 186, 0.4); }
-.dweek-date { font-size: 0.75rem; font-weight: 700; color: var(--ink); line-height: 1.2; }
-.dweek-date small { margin-left: 0.125rem; font-size: 0.625rem; font-weight: 400; color: var(--ink-soft); }
-.dweek-cell.sun .dweek-date, .dweek-cell.sun .dweek-date small { color: #c47a7a; }
-.dweek-cell.sat .dweek-date, .dweek-cell.sat .dweek-date small { color: var(--sea); }
+.dweek-head strong { font-size: 0.8125rem; color: var(--sea-deep); }
+/* 하루 한 줄: 날짜 | 기분 | 내용 한 줄 (줄 사이 점선 = 플래너 줄) */
+.dweek-days { list-style: none; margin: 0; padding: 0; }
+.dweek-days > li + li { border-top: 1px dashed var(--line); }
+.dweek-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 2.75rem 1.75rem minmax(0, 1fr); /* 날짜 | 기분 | 내용 */
+  align-items: center;
+  min-height: 2.25rem;
+  padding: 0 0.75rem;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+button.dweek-row { cursor: pointer; }
+button.dweek-row:hover { background: rgba(248, 229, 186, 0.3); }
+.dweek-date { display: flex; align-items: baseline; gap: 0.25rem; line-height: 1.2; }
+.dweek-date b { font-size: 0.8125rem; color: var(--ink); }
+.dweek-date small { font-size: 0.6875rem; color: var(--ink-soft); }
+.dweek-row.sun .dweek-date b, .dweek-row.sun .dweek-date small { color: #c47a7a; }
+.dweek-row.sat .dweek-date b, .dweek-row.sat .dweek-date small { color: var(--sea); }
+.dweek-row:not(.has) .dweek-date { opacity: 0.55; } /* 안 쓴 날은 흐리게 */
 .dweek-mood {
-  height: 1.375rem;
   display: inline-flex; align-items: center; justify-content: center;
   font-size: 1.125rem; line-height: 1;
   color: #b8892e;
 }
 .dweek-mood svg { width: 0.875rem; height: 0.875rem; }
+.dweek-text {
+  min-width: 0;
+  padding-left: 0.5rem;
+  font-size: var(--list-font);
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis; /* 한 줄만, 뒤는 ... */
+}
+
+/* 일기장 팝업 */
+.diary-popup {
+  width: min(24rem, 100%);
+  max-height: calc(100dvh - 2rem);
+  display: flex;
+  flex-direction: column;
+  background: #fffdf6;
+  border: 1px solid rgba(184, 137, 46, 0.25);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  animation: modal-pop .18s ease;
+}
+.diary-popup-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem 0.875rem;
+  background: rgba(248, 229, 186, 0.35);
+  border-bottom: 2px solid rgba(196, 122, 122, 0.35); /* 일기장 머리 밑줄 */
+}
+.diary-popup-date { display: grid; line-height: 1.25; }
+.diary-popup-date small { font-size: 0.75rem; color: var(--ink-soft); }
+.diary-popup-date strong { font-size: 1.25rem; color: var(--sea-deep); }
+.diary-popup-date strong span { font-size: 0.875rem; font-weight: 600; color: var(--ink-soft); }
+.diary-popup-date.sun strong span { color: #c47a7a; }
+.diary-popup-date.sat strong span { color: var(--sea); }
+/* 이모지 글리프가 글자 상자보다 커서 line-height:1 이면 위아래가 잘려 보일 수 있음 → 여유를 둠 */
+.diary-popup-mood { flex: none; font-size: 2rem; line-height: 1.25; padding: 0.125rem 0; }
+/* 공책 줄 무늬 위에 글: 줄 간격과 배경 줄 간격을 같게(1.75rem) */
+.diary-popup-paper {
+  flex: 1;
+  min-height: 10.5rem;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0.25rem 1.25rem 0.875rem 1.75rem;
+  font-size: 0.9375rem;
+  line-height: 1.75rem;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--ink);
+  background:
+    linear-gradient(90deg, transparent 1.125rem, rgba(196, 122, 122, 0.3) 1.125rem, rgba(196, 122, 122, 0.3) calc(1.125rem + 1px), transparent calc(1.125rem + 1px)),
+    repeating-linear-gradient(transparent 0, transparent calc(1.75rem - 1px), rgba(163, 204, 218, 0.55) calc(1.75rem - 1px), rgba(163, 204, 218, 0.55) 1.75rem);
+  background-attachment: local;
+  background-position: 0 0.25rem;
+}
+.diary-popup-empty { color: var(--ink-soft); }
+.diary-popup-actions { display: flex; justify-content: flex-end; padding: 0.75rem 1rem 1rem; }
+
+/* 현황 일기 summary: 기분별 개수 (8칸 한 줄) */
+.mood-summary {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0.5rem 0.25rem;
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  border-radius: 0.875rem;
+  background: var(--tint);
+}
+.mood-summary li {
+  display: flex; flex-direction: column; align-items: center; gap: 0.125rem;
+}
+.mood-summary-emoji { font-size: 1.25rem; line-height: 1; }
+.mood-summary-count { font-size: 0.8125rem; font-weight: 700; color: var(--sea-deep); }
+.mood-summary li.zero { opacity: 0.35; }

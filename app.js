@@ -1164,8 +1164,7 @@ registerSW({ immediate: true });
     const summaryCells = {
       all: [
         cell('루틴 달성률', avgText),
-        cell('루틴 수', `${db.routines.length}개`),
-        cell('할 일 (작성 / 완료)', `${todoAll.length} / ${todoDone}`),
+        cell('할 일 달성률', todoRate === null ? '-' : todoRate + '%'),
         cell('작성한 일기', `${diaryCount}개`),
       ],
       routine: [cell('루틴 달성률', avgText), cell('루틴 수', `${db.routines.length}개`)],
@@ -1184,13 +1183,18 @@ registerSW({ immediate: true });
       ['diary', '일기'],
     ];
 
-    view.innerHTML = `
+    // 탭은 header 안(제목 줄 아래)에 그려서 스크롤해도 header와 함께 고정
+    const tabsHtml = `
       <div class="segmented stats-tabs" role="tablist">
         ${TABS.map(
           ([key, label]) => `<button type="button" role="tab" aria-selected="${statsTab === key}"
                                class="${statsTab === key ? 'on' : ''}" data-action="stats-tab" data-tab="${key}">${label}</button>`
         ).join('')}
-      </div>
+      </div>`;
+    if (headerSub) headerSub.innerHTML = `<div class="app-header__sub">${tabsHtml}</div>`;
+
+    view.innerHTML = `
+      ${headerSub ? '' : tabsHtml}
 
       <section class="section">
         <div class="month-nav">
@@ -1201,6 +1205,7 @@ registerSW({ immediate: true });
         <div class="summary" style="--cols:${summaryCells.length}${summaryCells.length > 3 ? ';--cols-sm:2' : ''}">
           ${summaryCells.join('')}
         </div>
+        ${statsTab === 'diary' ? moodSummary(ym) : ''}
       </section>
 
       ${
@@ -1226,6 +1231,25 @@ registerSW({ immediate: true });
         <p class="hint">달성률은 그 달 전체에 해야 하는 횟수 기준이에요. <br>주 N회 루틴은 주 단위 목표를 그 달 날짜 수에 맞춰 계산해요.</p>
       </section>`;
     }
+  }
+
+  // 일기 summary: 그 달에 고른 기분별 개수 (8가지 모두 표시, 0개는 흐리게)
+  function moodSummary(ym) {
+    const counts = Object.fromEntries(MOODS.map(([e]) => [e, 0]));
+    monthDays(ym).forEach((d) => {
+      const m = diaryMood(d);
+      if (m && m in counts) counts[m] += 1;
+    });
+    return `
+      <ul class="mood-summary" aria-label="기분별 개수">
+        ${MOODS.map(
+          ([e, label]) => `
+          <li class="${counts[e] ? '' : 'zero'}" title="${label} ${counts[e]}개">
+            <span class="mood-summary-emoji">${e}</span>
+            <span class="mood-summary-count">${counts[e]}</span>
+          </li>`
+        ).join('')}
+      </ul>`;
   }
 
   // 'YYYY-MM-DD' → '11월 3일 (월)'
@@ -1300,40 +1324,57 @@ registerSW({ immediate: true });
       </section>`;
   }
 
-  // 그 달의 일기: 일주일(일~토)씩 한 줄, 날짜·요일 + 기분 이모지 (기분 없이 쓴 날은 연필)
+  // 그 달의 일기: 위클리 플래너처럼 주(일~토)마다 카드 하나,
+  // 카드 안은 하루 한 줄 [날짜·요일 | 기분 이모지(기분 없이 쓴 날은 연필) | 일기 한 줄 …]
+  // 일기를 쓴 줄을 누르면 일기장 모양 팝업으로 전체 내용을 보여준다
   function renderMonthDiary(ym) {
     const days = monthDays(ym);
     const written = days.filter(hasDiary).length;
 
-    // 일요일 시작 주 단위로 자르기 (달 밖 날짜는 빈 칸)
+    // 일요일 시작 주 단위로 자르기 (달 밖 날짜는 넣지 않음)
     const weeks = [];
-    let week = Array(parse(days[0]).getDay()).fill(null);
+    let week = [];
     days.forEach((d) => {
-      week.push(d);
-      if (week.length === 7) {
+      if (week.length && parse(d).getDay() === 0) {
         weeks.push(week);
         week = [];
       }
+      week.push(d);
     });
-    if (week.length) weeks.push([...week, ...Array(7 - week.length).fill(null)]);
+    if (week.length) weeks.push(week);
 
-    const cellHtml = (d) => {
-      if (!d) return '<div class="dweek-cell blank"></div>';
+    const rowHtml = (d) => {
       const dow = parse(d).getDay();
       const mood = diaryMood(d);
       const text = diaryText(d).trim();
-      const tip = hasDiary(d)
-        ? [dayLabel(d), mood ? `${mood} ${moodLabel(mood)}` : '', text].filter(Boolean).join('\n')
-        : dayLabel(d);
-      return `
-        <div class="dweek-cell ${hasDiary(d) ? 'has' : ''} ${dow === 0 ? 'sun' : dow === 6 ? 'sat' : ''}" title="${esc(tip)}">
-          <span class="dweek-date">${Number(d.slice(8))}<small>${WEEKDAYS[dow]}</small></span>
+      const has = hasDiary(d);
+      const cls = `dweek-row ${has ? 'has' : ''} ${dow === 0 ? 'sun' : dow === 6 ? 'sat' : ''}`;
+      const inner = `
+          <span class="dweek-date"><b>${Number(d.slice(8))}</b><small>${WEEKDAYS[dow]}</small></span>
           <span class="dweek-mood">${mood || (text ? DIARY_ICON : '')}</span>
-        </div>`;
+          <span class="dweek-text">${text ? esc(text.split('\n')[0]) : ''}</span>`;
+      return has
+        ? `<li><button type="button" class="${cls}" data-action="open-diary" data-date="${d}"
+                   aria-label="${dayLabel(d)} 일기 보기">${inner}</button></li>`
+        : `<li><div class="${cls}">${inner}</div></li>`;
     };
 
+    const md = (d) => `${Number(d.slice(5, 7))}.${Number(d.slice(8))}`;
     const body = written
-      ? `<div class="dweeks">${weeks.map((w) => `<div class="dweek">${w.map(cellHtml).join('')}</div>`).join('')}</div>`
+      ? `<div class="dweeks">
+          ${weeks
+            .map(
+              (w, i) => `
+              <div class="dweek">
+                <div class="dweek-head">
+                  <strong>${i + 1}주차</strong>
+                  <span class="routine-meta">${md(w[0])} – ${md(w[w.length - 1])} · ${w.filter(hasDiary).length}일 작성</span>
+                </div>
+                <ul class="dweek-days">${w.map(rowHtml).join('')}</ul>
+              </div>`
+            )
+            .join('')}
+        </div>`
       : '<p class="empty">이 달에 쓴 일기가 없어요.</p>';
 
     return `
@@ -1343,6 +1384,50 @@ registerSW({ immediate: true });
         </div>
         ${body}
       </section>`;
+  }
+
+  // 일기장 모양 팝업 (월간 현황 일기에서 줄을 누르면). 바깥·닫기·Esc 로 닫힘
+  function showDiaryPopup(d) {
+    const mood = diaryMood(d);
+    const text = diaryText(d).trim();
+    const dt = parse(d);
+    const dow = dt.getDay();
+    const prevFocus = document.activeElement;
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop diary-popup-backdrop';
+    backdrop.innerHTML = `
+      <div class="diary-popup" role="dialog" aria-modal="true" aria-labelledby="diary-popup-date">
+        <div class="diary-popup-head">
+          <div class="diary-popup-date ${dow === 0 ? 'sun' : dow === 6 ? 'sat' : ''}" id="diary-popup-date">
+            <small>${dt.getFullYear()}년 ${dt.getMonth() + 1}월</small>
+            <strong>${dt.getDate()}일 <span>${WEEKDAYS[dow]}요일</span></strong>
+          </div>
+          ${mood ? `<div class="diary-popup-mood" title="${esc(moodLabel(mood))}" aria-label="기분: ${esc(moodLabel(mood))}">${mood}</div>` : ''}
+        </div>
+        <div class="diary-popup-paper">${text ? esc(text) : '<span class="diary-popup-empty">기분만 남긴 날이에요.</span>'}</div>
+        <div class="diary-popup-actions">
+          <button type="button" class="btn lg primary" data-close>닫기</button>
+        </div>
+      </div>`;
+
+    const close = () => {
+      document.removeEventListener('keydown', onKey, true);
+      backdrop.remove();
+      if (prevFocus && typeof prevFocus.focus === 'function' && prevFocus.isConnected) prevFocus.focus();
+    };
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        close();
+      }
+    };
+    backdrop.addEventListener('click', (e) => {
+      if (e.target === backdrop || e.target.closest('[data-close]')) close();
+    });
+    document.addEventListener('keydown', onKey, true);
+    document.body.appendChild(backdrop);
+    backdrop.querySelector('[data-close]').focus();
   }
 
   /* =========================================================
@@ -1736,6 +1821,9 @@ registerSW({ immediate: true });
       case 'stats-tab':
         statsTab = el.dataset.tab;
         renderStats();
+        break;
+      case 'open-diary':
+        showDiaryPopup(el.dataset.date);
         break;
       case 'stats-back':
         leaveStats();
