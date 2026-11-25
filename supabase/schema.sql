@@ -75,6 +75,10 @@ create table if not exists public.planner_state (
   updated_at timestamptz not null default now()
 );
 
+-- 일정 (앱의 db.events)
+alter table public.planner_state
+  add column if not exists events jsonb not null default '[]'::jsonb;
+
 alter table public.planner_state
   add column if not exists user_id uuid references auth.users (id) on delete cascade;
 

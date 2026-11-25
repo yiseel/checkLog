@@ -17,6 +17,7 @@ registerSW({ immediate: true });
     routineChecks: {}, // { 'YYYY-MM-DD': [routineId, ...] }
     todos: {},         // { 'YYYY-MM-DD': [{ id, text, done }] }
     diary: {},         // { 'YYYY-MM-DD': '내용' | { text: '내용', mood: '😊' } } — 기분이 있을 때만 객체
+    events: [],        // [{ id, title, start, end, startTime, endTime, place, repeat, color, memo }]
   });
 
   function loadDB() {
@@ -164,8 +165,8 @@ registerSW({ immediate: true });
         resetEditing();
         if (!routineDraft) route();
       }
-      // 비로그인으로 확인됐는데 루틴 페이지에 있으면 로그인 화면으로
-      if (location.hash.startsWith('#/routine')) route();
+      // 비로그인으로 확인됐는데 루틴·일정 페이지에 있으면 로그인 화면으로
+      if (/^#\/(routine|event)/.test(location.hash)) route();
       return;
     }
     if (location.hash === '#/login') location.replace('#/');
@@ -196,7 +197,8 @@ registerSW({ immediate: true });
       source.routines.length > 0 ||
       Object.keys(source.todos).length > 0 ||
       Object.keys(source.diary).length > 0 ||
-      Object.keys(source.routineChecks).length > 0
+      Object.keys(source.routineChecks).length > 0 ||
+      (source.events || []).length > 0
     );
   }
 
@@ -233,15 +235,23 @@ registerSW({ immediate: true });
     if (!supabase || !remoteReady || !currentUser) return;
     setSyncStatus('saving');
     const updatedAt = localStorage.getItem(UPDATED_KEY) || stampLocal();
-    const { error } = await supabase.from('planner_state').upsert({
+    const row = {
       id: currentUser.id,
       user_id: currentUser.id,
       routines: db.routines,
       routine_checks: db.routineChecks,
       todos: db.todos,
       diary: db.diary,
+      events: db.events || [],
       updated_at: updatedAt,
-    });
+    };
+    let { error } = await supabase.from('planner_state').upsert(row);
+    if (error && /events/.test(error.message)) {
+      // planner_state 에 events 컬럼이 아직 없음(schema.sql 미실행) → 나머지는 저장하고 일정은 이 기기에만 보관
+      console.warn('planner_state.events 컬럼이 없어 일정은 이 기기에만 저장됩니다. supabase/schema.sql 을 실행해 주세요.');
+      delete row.events;
+      ({ error } = await supabase.from('planner_state').upsert(row));
+    }
     if (error) {
       console.warn('Supabase 저장에 실패했습니다.', error.message);
       setSyncStatus('error', error.message);
@@ -257,6 +267,8 @@ registerSW({ immediate: true });
       routineChecks: row.routine_checks && typeof row.routine_checks === 'object' ? row.routine_checks : {},
       todos: row.todos && typeof row.todos === 'object' ? row.todos : {},
       diary: row.diary && typeof row.diary === 'object' ? row.diary : {},
+      // events 컬럼이 아직 없으면(undefined) 이 기기에 있던 일정을 유지
+      events: Array.isArray(row.events) ? row.events : db.events || [],
     };
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
@@ -269,7 +281,7 @@ registerSW({ immediate: true });
   function fetchRemote(uid) {
     return supabase
       .from('planner_state')
-      .select('routines, routine_checks, todos, diary, updated_at')
+      .select('*') // events 컬럼이 아직 없어도 오류 없이 불러오도록 전체 선택
       .eq('user_id', uid)
       .maybeSingle();
   }
@@ -327,7 +339,7 @@ registerSW({ immediate: true });
     }
 
     applyRemote(data);
-    if (!routineDraft) route();
+    if (!routineDraft && !eventDraft) route(); // 입력 중인 팝업은 유지
     setSyncStatus('saved');
   }
 
@@ -414,6 +426,7 @@ registerSW({ immediate: true });
   };
 
   let routineDraft = null; // 루틴 설정 페이지 입력값
+  let eventDraft = null; // 일정 추가·수정 팝업 입력값
   let cameFromMain = false;
 
   const view = document.getElementById('view');
@@ -493,7 +506,8 @@ registerSW({ immediate: true });
     return (
       (db.todos[dateStr] || []).length > 0 ||
       hasDiary(dateStr) ||
-      (db.routineChecks[dateStr] || []).length > 0
+      (db.routineChecks[dateStr] || []).length > 0 ||
+      eventsOn(dateStr).length > 0
     );
   }
 
@@ -595,7 +609,7 @@ registerSW({ immediate: true });
         <form class="todo-inline" data-form="${form}" ${id ? `data-id="${id}"` : ''}>
           <span class="todo-check-slot ${done ? 'done' : ''}" aria-hidden="true"></span>
           <input class="todo-input" name="text" value="${esc(value)}" maxlength="200" autocomplete="off"
-                 placeholder="할 일을 입력하세요" aria-label="${isAdd ? '새 할 일' : '할 일 수정'}" />
+                 placeholder="할 일을 입력해주세요" aria-label="${isAdd ? '새 할 일' : '할 일 수정'}" />
           <button class="btn sm icon primary" type="submit" aria-label="저장" title="저장 (Enter)">${SAVE_ICON}</button>
           <button class="btn sm icon" type="button" data-action="${isAdd ? 'cancel-todo-add' : 'cancel-todo-edit'}"
                   aria-label="취소" title="취소 (Esc)">${CANCEL_ICON}</button>
@@ -694,7 +708,7 @@ registerSW({ immediate: true });
 
   function renderMain() {
     if (headerSub) headerSub.innerHTML = `<div class="app-header__sub">${renderCalendar()}</div>`;
-    view.innerHTML = (headerSub ? '' : renderCalendar()) + renderRoutines() + renderTodos() + renderDiary();
+    view.innerHTML = (headerSub ? '' : renderCalendar()) + renderEvents() + renderRoutines() + renderTodos() + renderDiary();
   }
 
   function resetEditing() {
@@ -891,7 +905,7 @@ registerSW({ immediate: true });
               ${r.pickerOpen ? renderEmojiPicker(r) : ''}
             </div>
             <input id="routine-name" class="field" name="name" value="${esc(r.name)}" maxlength="50"
-                   placeholder="예: 아침 물 한 잔 마시기, 독서 30분" autocomplete="off" />
+                   placeholder="루틴명을 입력해주세요" autocomplete="off" />
           </div>
           ${r.error ? `<p class="error">${esc(r.error)}</p>` : ''}
         </div>
@@ -940,7 +954,7 @@ registerSW({ immediate: true });
 
         <div class="form-group">
           <label for="routine-memo">메모</label>
-          <textarea id="routine-memo" class="field" name="memo" placeholder="다짐이나 세부 목표, 참고사항을 적어보세요.">${esc(r.memo)}</textarea>
+          <textarea id="routine-memo" class="field" name="memo" placeholder="메모를 입력해주세요">${esc(r.memo)}</textarea>
         </div>
 
         <div class="form-actions">
@@ -986,6 +1000,426 @@ registerSW({ immediate: true });
 
   function leaveRoutineForm() {
     routineDraft = null;
+    if (cameFromMain) history.back();
+    else location.hash = '#/';
+  }
+
+  /* =========================================================
+   * 일정 (#/events, #/event/new, #/event/edit/:id)
+   * 일정: { id, title, start, end, startTime, endTime, place, repeat, color, memo }
+   *  - start/end: 'YYYY-MM-DD' (기간), startTime/endTime 'HH:MM' (선택, 비우면 날짜만)
+   *  - repeat: 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly' (시작일 기준으로 반복, 기간 길이 유지)
+   * ========================================================= */
+  const REPEATS = [
+    ['none', '안 함'],
+    ['daily', '매일'],
+    ['weekly', '매주'],
+    ['monthly', '매월'],
+    ['yearly', '매년'],
+  ];
+
+  /** 반복 규칙상 b 날짜에 일정이 "시작"하는지 */
+  function eventStartsOn(ev, b) {
+    if (b < ev.start) return false;
+    if (b === ev.start) return true;
+    const s = parse(ev.start);
+    const t = parse(b);
+    switch (ev.repeat) {
+      case 'daily':
+        return true;
+      case 'weekly':
+        return t.getDay() === s.getDay();
+      case 'monthly':
+        return t.getDate() === s.getDate();
+      case 'yearly':
+        return t.getMonth() === s.getMonth() && t.getDate() === s.getDate();
+      default:
+        return false;
+    }
+  }
+
+  /** d 날짜에 걸치는 회차의 시작일 (없으면 null). 기간이 여러 날이면 그 안의 날짜도 포함 */
+  function eventOccurrenceOn(ev, d) {
+    if (d < ev.start) return null;
+    const dur = Math.max(0, diffDays(ev.end || ev.start, ev.start));
+    if (!ev.repeat || ev.repeat === 'none') return d <= (ev.end || ev.start) ? ev.start : null;
+    for (let k = 0; k <= Math.min(dur, 366); k++) {
+      const b = addDays(d, -k);
+      if (eventStartsOn(ev, b)) return b;
+    }
+    return null;
+  }
+
+  /** d 날짜의 일정 목록 [{ ev, base }] — 시간 없는 일정 먼저, 그다음 시작 시각 순 */
+  function eventsOn(d) {
+    return (db.events || [])
+      .map((ev) => ({ ev, base: eventOccurrenceOn(ev, d) }))
+      .filter((x) => x.base)
+      .sort(
+        (a, b) =>
+          evStartTime(a.ev).localeCompare(evStartTime(b.ev)) ||
+          a.ev.title.localeCompare(b.ev.title)
+      );
+  }
+
+  /** 기간 문구 (회차 시작일 base 기준) */
+  // 시간은 선택 입력: 비어 있으면 날짜만 (예전 데이터의 allDay: true 도 시간 없음으로 취급)
+  const evStartTime = (ev) => (ev.allDay ? '' : ev.startTime || '');
+  const evEndTime = (ev) => (ev.allDay ? '' : ev.endTime || '');
+
+  /** 기간 문구 (회차 시작일 base 기준) — 날짜와 시간만, 반복·하루 종일 문구는 넣지 않음 */
+  function eventPeriodText(ev, base = ev.start) {
+    const dur = Math.max(0, diffDays(ev.end || ev.start, ev.start));
+    const s = base;
+    const e = addDays(base, dur);
+    const st = evStartTime(ev);
+    const et = evEndTime(ev);
+    const join = (...parts) => parts.filter(Boolean).join(' ');
+    if (s === e) {
+      // 같은 날: 11월 25일 (화) 14:00 – 15:00
+      return join(dayLabel(s), st && et ? `${st} – ${et}` : st || (et ? `~ ${et}` : ''));
+    }
+    // 여러 날: 11월 24일 (화) 14:00 – 11월 26일 (목) 18:00
+    return `${join(dayLabel(s), st)} – ${join(dayLabel(e), et)}`;
+  }
+
+  /** 일정 카드: 선택한 색상 배경 + 왼쪽 색 띠, 일정명 / 기간(작게·회색) */
+  // action 이 없으면 누를 수 없는 카드(div) — 메인 목록용
+  function eventCard({ ev, base }, action = '') {
+    const inner = `
+          <span class="event-title">${esc(ev.title)}</span>
+          <span class="event-period">${esc(eventPeriodText(ev, base))}</span>`;
+    const attrs = `class="event-card" style="--ec:${esc(ev.color || COLORS[0])}" ${ev.memo ? `title="${esc(ev.memo)}"` : ''}`;
+    return action
+      ? `<li><button type="button" ${attrs} data-action="${action}" data-id="${ev.id}">${inner}</button></li>`
+      : `<li><div ${attrs}>${inner}</div></li>`;
+  }
+
+  // 메인: 선택한 날짜의 일정
+  function renderEvents() {
+    const list = eventsOn(ui.selected);
+    return `
+      <section class="section">
+        <div class="section-head">
+          <h2>일정${list.length ? `<span class="count">${list.length}</span>` : ''}</h2>
+          <button class="add-btn" data-action="open-events" aria-label="일정 관리">+</button>
+        </div>
+        ${
+          list.length
+            ? `<ul class="event-list">${list.map((x) => eventCard(x)).join('')}</ul>`
+            : '<p class="empty">이 날짜에 일정이 없어요.</p>'
+        }
+      </section>`;
+  }
+
+  let eventPage = null; // { month: 'YYYY-MM', selected: 'YYYY-MM-DD' }
+  // eventDraft 는 위쪽(routineDraft 옆)에 선언
+
+  function ensureEventPage() {
+    eventPage ||= { month: ui.selected.slice(0, 7), selected: ui.selected };
+  }
+
+  /**
+   * 일정 관리 페이지 진입.
+   *  - id 있음: 일정 수정 팝업 (#/event/edit/:id)
+   *  - id 없음 + modal: 일정 추가 팝업 (#/event/new)
+   *  - id 없음 + !modal: 달력 + 목록만 (#/events)
+   */
+  function openEventForm(id, { modal = true } = {}) {
+    ensureEventPage();
+    const existing = id ? (db.events || []).find((x) => x.id === id) : null;
+    if (id && !existing) {
+      location.replace('#/events');
+      return;
+    }
+    if (!existing && !modal) {
+      eventDraft = null;
+    } else {
+      eventDraft = existing
+        ? (() => {
+            const st = evStartTime(existing);
+            const et = evEndTime(existing);
+            // 시간이 하나도 없으면 하루 종일로 연다
+            return { ...JSON.parse(JSON.stringify(existing)), allDay: !st && !et, startTime: st || '09:00', endTime: et || '10:00' };
+          })()
+        : {
+            id: null,
+            title: '',
+            start: eventPage.selected,
+            end: eventPage.selected,
+            allDay: false,
+            startTime: '09:00',
+            endTime: '10:00',
+            place: '',
+            repeat: 'none',
+            color: COLORS[0],
+            memo: '',
+          };
+      eventDraft.error = '';
+      eventDraft.picker = null;
+      eventDraft.modalEnter = true;
+    }
+    renderEventPage();
+    if (eventDraft) focusField('#event-title');
+  }
+
+  /* --- 기간 선택기: 브라우저 기본 달력·시간창 대신 앱 스타일 팝업 ---
+   * eventDraft.picker = { field: 'start' | 'end' | 'startTime' | 'endTime', month: 'YYYY-MM' } | null */
+  const CAL_ICON = `
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <rect x="2.5" y="3.5" width="11" height="10" rx="2" /><path d="M2.5 6.5h11M5.5 2v3M10.5 2v3" />
+    </svg>`;
+  const CLOCK_ICON = `
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="8" cy="8" r="5.75" /><path d="M8 5v3.25l2 1.25" />
+    </svg>`;
+  const MINUTE_STEPS = Array.from({ length: 12 }, (_, i) => i * 5);
+
+  function pickDateText(d) {
+    if (!d) return '날짜 선택';
+    const dt = parse(d);
+    return `${dt.getFullYear()}. ${dt.getMonth() + 1}. ${dt.getDate()} (${WEEKDAYS[dt.getDay()]})`;
+  }
+  const hourText = (h) => `${h < 12 ? '오전' : '오후'} ${((h + 11) % 12) + 1}`;
+  function pickTimeText(t) {
+    if (!t) return '시간 선택';
+    const [h, m] = t.split(':').map(Number);
+    return `${hourText(h)}:${pad(m)}`;
+  }
+
+  function periodField(field) {
+    const r = eventDraft;
+    const isTime = field.endsWith('Time');
+    const open = r.picker?.field === field;
+    const label = { start: '시작일', end: '종료일', startTime: '시작 시각', endTime: '종료 시각' }[field];
+    return `
+      <div class="picker-wrap ${isTime ? 'time' : 'date'}">
+        <button type="button" class="field picker-btn ${open ? 'open' : ''}" data-action="ev-picker" data-field="${field}"
+                aria-label="${label}" aria-expanded="${open}" ${isTime && r.allDay ? 'disabled' : ''}>
+          <span>${isTime ? pickTimeText(r[field]) : pickDateText(r[field])}</span>${isTime ? CLOCK_ICON : CAL_ICON}
+        </button>
+        ${open ? (isTime ? renderTimePop(field) : renderDatePop(field)) : ''}
+      </div>`;
+  }
+
+  function renderDatePop(field) {
+    const r = eventDraft;
+    const ym = r.picker.month;
+    const [y, m] = ym.split('-').map(Number);
+    const days = monthDays(ym);
+    const today = todayStr();
+    const lead = parse(days[0]).getDay();
+    const min = field === 'end' ? r.start : '';
+    return `
+      <div class="picker-pop dp" role="dialog" aria-label="날짜 선택">
+        <div class="dp-head">
+          <button type="button" class="dp-nav" data-action="ev-pick-month" data-delta="-1" aria-label="이전 달">&lsaquo;</button>
+          <strong>${y}년 ${m}월</strong>
+          <button type="button" class="dp-nav" data-action="ev-pick-month" data-delta="1" aria-label="다음 달">&rsaquo;</button>
+        </div>
+        <div class="dp-grid">
+          ${WEEKDAYS.map((w, i) => `<span class="dp-wd ${i === 0 ? 'sun' : i === 6 ? 'sat' : ''}">${w}</span>`).join('')}
+          ${'<span></span>'.repeat(lead)}
+          ${days
+            .map((d) => {
+              const dow = parse(d).getDay();
+              const cls = ['dp-day', d === r[field] ? 'on' : '', d === today ? 'today' : '', dow === 0 ? 'sun' : dow === 6 ? 'sat' : ''].join(' ');
+              return `<button type="button" class="${cls}" data-action="ev-pick-date" data-date="${d}" ${min && d < min ? 'disabled' : ''}>${Number(d.slice(8))}</button>`;
+            })
+            .join('')}
+        </div>
+        <div class="dp-foot">
+          <button type="button" class="dp-today" data-action="ev-pick-date" data-date="${today}" ${min && today < min ? 'disabled' : ''}>오늘</button>
+        </div>
+      </div>`;
+  }
+
+  function renderTimePop(field) {
+    const [h, m] = (eventDraft[field] || '09:00').split(':').map(Number);
+    return `
+      <div class="picker-pop tp" role="dialog" aria-label="시간 선택">
+        <div class="tp-col" data-col="hour">
+          <span class="tp-label">시</span>
+          ${Array.from({ length: 24 }, (_, i) => `<button type="button" class="${i === h ? 'on' : ''}" data-action="ev-pick-hour" data-h="${i}">${hourText(i)}시</button>`).join('')}
+        </div>
+        <div class="tp-col" data-col="min">
+          <span class="tp-label">분</span>
+          ${MINUTE_STEPS.map((mm) => `<button type="button" class="${mm === m ? 'on' : ''}" data-action="ev-pick-min" data-m="${mm}">${pad(mm)}분</button>`).join('')}
+        </div>
+      </div>`;
+  }
+
+  /** 시간 목록: 선택된 시·분이 목록 가운데 오도록 스크롤 */
+  function centerTimeColumns() {
+    view.querySelectorAll('.tp-col').forEach((col) => {
+      const on = col.querySelector('button.on');
+      if (on) col.scrollTop = on.offsetTop - col.clientHeight / 2 + on.offsetHeight / 2;
+    });
+  }
+
+  function renderEventForm() {
+    const r = eventDraft;
+    const isEdit = !!r.id;
+    return `
+      <form class="routine-modal-form" data-form="event" novalidate>
+        <div class="section-head">
+          <h2 id="event-form-title">${isEdit ? '일정 수정' : '일정 추가'}</h2>
+        </div>
+
+        <div class="form-group">
+          <label for="event-title">일정 <span class="req">*</span></label>
+          <input id="event-title" class="field" name="title" value="${esc(r.title)}" maxlength="60"
+                 placeholder="일정을 입력해주세요" autocomplete="off" />
+          ${r.error ? `<p class="error">${esc(r.error)}</p>` : ''}
+        </div>
+
+        <div class="form-group">
+          <div class="label-row">
+            <span class="label">기간</span>
+            <label class="check-inline">
+              <input type="checkbox" data-action="ev-allday" ${r.allDay ? 'checked' : ''} /> 하루 종일
+            </label>
+          </div>
+          <div class="period-row">${periodField('start')}${periodField('startTime')}</div>
+          <div class="period-sep" aria-hidden="true">~</div>
+          <div class="period-row">${periodField('end')}${periodField('endTime')}</div>
+        </div>
+
+        <div class="form-group">
+          <label for="event-place">장소</label>
+          <input id="event-place" class="field" name="place" value="${esc(r.place)}" maxlength="60"
+                 placeholder="장소를 입력해주세요" autocomplete="off" />
+        </div>
+
+        <div class="form-group">
+          <span class="label">반복</span>
+          <div class="segmented">
+            ${REPEATS.map(
+              ([k, label]) => `<button type="button" class="${r.repeat === k ? 'on' : ''}" data-action="ev-repeat" data-repeat="${k}">${label}</button>`
+            ).join('')}
+          </div>
+          ${r.repeat !== 'none' ? '<p class="hint">시작일을 기준으로 반복돼요.</p>' : ''}
+        </div>
+
+        <div class="form-group">
+          <span class="label">색상</span>
+          <div class="palette">
+            ${COLORS.map(
+              (c) => `<button type="button" class="swatch ${r.color === c ? 'selected' : ''}" style="background:${c}"
+                         data-action="ev-color" data-color="${c}" aria-label="색상 ${c}"></button>`
+            ).join('')}
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="event-memo">간단 설명</label>
+          <textarea id="event-memo" class="field" name="memo" maxlength="300" placeholder="간단 설명을 입력해주세요">${esc(r.memo)}</textarea>
+        </div>
+
+        <div class="form-actions">
+          ${isEdit ? '<button type="button" class="btn lg danger" data-action="event-delete">삭제</button><span class="spacer"></span>' : ''}
+          <button type="button" class="btn lg" data-action="event-close">취소</button>
+          <button type="submit" class="btn lg primary">저장</button>
+        </div>
+      </form>`;
+  }
+
+  function renderEventPage() {
+    const p = eventPage;
+    const [y, m] = p.month.split('-').map(Number);
+    const today = todayStr();
+
+    setHeaderTitle(`
+      <div class="page-title">
+        <button class="back-btn" data-action="events-back" aria-label="뒤로가기">&lsaquo;</button>
+        <h2>일정 관리</h2>
+      </div>`);
+
+    // 팝업이 이미 떠 있으면 팝업 안의 폼만 다시 그린다 (깜빡임·스크롤 초기화 방지)
+    const openModal = view.querySelector('.event-modal');
+    if (eventDraft && !eventDraft.modalEnter && openModal) {
+      const scrollTop = openModal.scrollTop;
+      const activeName = document.activeElement?.name;
+      openModal.innerHTML = renderEventForm();
+      openModal.scrollTop = scrollTop;
+      if (activeName) openModal.querySelector(`[name="${activeName}"]`)?.focus();
+      return;
+    }
+
+    const days = monthDays(p.month);
+    const lead = parse(days[0]).getDay();
+    const blanks = Array.from({ length: lead }, () => '<div class="ecal-cell blank"></div>').join('');
+    const cells = days
+      .map((d) => {
+        const dow = parse(d).getDay();
+        const evs = eventsOn(d);
+        const cls = [
+          'ecal-cell',
+          d === p.selected ? 'active' : '',
+          d === today ? 'today' : '',
+          dow === 0 ? 'sun' : dow === 6 ? 'sat' : '',
+        ].join(' ');
+        return `
+          <button type="button" class="${cls}" data-action="ev-select" data-date="${d}"
+                  aria-label="${dayLabel(d)}${evs.length ? ` 일정 ${evs.length}개` : ''}">
+            <span class="ecal-date">${Number(d.slice(8))}</span>
+            <span class="ecal-dots">
+              ${evs.slice(0, 3).map(({ ev }) => `<i style="background:${esc(ev.color || COLORS[0])}"></i>`).join('')}
+              ${evs.length > 3 ? '<small>+</small>' : ''}
+            </span>
+          </button>`;
+      })
+      .join('');
+
+    const list = eventsOn(p.selected);
+
+    const modal = eventDraft
+      ? `
+      <div class="modal-backdrop routine-modal-backdrop ${eventDraft.modalEnter ? 'enter' : ''}">
+        <div class="modal routine-modal event-modal" role="dialog" aria-modal="true" aria-labelledby="event-form-title">
+          ${renderEventForm()}
+        </div>
+      </div>`
+      : '';
+    if (eventDraft) eventDraft.modalEnter = false;
+    document.body.classList.toggle('modal-open', !!eventDraft);
+
+    view.innerHTML = `
+      <section class="ecal-card">
+        <div class="ecal-top">
+          <button class="nav-btn sm" data-action="ev-month" data-delta="-1" aria-label="이전 달">&lsaquo;</button>
+          <strong class="calendar-month">${y}년 ${m}월</strong>
+          <button class="nav-btn sm" data-action="ev-month" data-delta="1" aria-label="다음 달">&rsaquo;</button>
+        </div>
+        <div class="ecal">
+          ${WEEKDAYS.map((w, i) => `<div class="ecal-wd ${i === 0 ? 'sun' : i === 6 ? 'sat' : ''}">${w}</div>`).join('')}
+          ${blanks}${cells}
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head">
+          <h2>${dayLabel(p.selected)}${list.length ? `<span class="count">${list.length}</span>` : ''}</h2>
+        </div>
+        ${
+          list.length
+            ? `<ul class="event-list">${list.map((x) => eventCard(x, 'open-event')).join('')}</ul>`
+            : '<p class="empty">이 날짜에 일정이 없어요.</p>'
+        }
+      </section>
+      ${modal}`;
+  }
+
+  /** 일정 추가·수정 팝업을 닫고 달력만 있는 일정 관리 화면으로 */
+  function closeEventEditor() {
+    location.replace('#/events');
+  }
+
+  function leaveEvents() {
+    eventDraft = null;
+    eventPage = null;
     if (cameFromMain) history.back();
     else location.hash = '#/';
   }
@@ -1225,7 +1659,7 @@ registerSW({ immediate: true });
           !db.routines.length
             ? '<p class="empty">등록된 루틴이 없어요.</p>'
             : isFuture
-              ? `<p class="empty">아직 오지 않은 달이에요.</p><ul class="list">${list}</ul>`
+              ? `${FUTURE_NOTE}<ul class="list">${list}</ul>`
               : `<ul class="list">${list}</ul>`
         }
         <p class="hint">달성률은 그 달 전체에 해야 하는 횟수 기준이에요. <br>주 N회 루틴은 주 단위 목표를 그 달 날짜 수에 맞춰 계산해요.</p>
@@ -1252,6 +1686,16 @@ registerSW({ immediate: true });
       </ul>`;
   }
 
+  // 월간 현황: 아직 오지 않은 달 안내 (루틴 · 일기 공용)
+  const FUTURE_NOTE = `
+    <p class="future-note" role="note">
+      <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"
+           stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <rect x="2.5" y="3.5" width="11" height="10" rx="2" /><path d="M2.5 6.5h11M5.5 2v3M10.5 2v3" />
+      </svg>
+      아직 오지 않은 달이에요.
+    </p>`;
+
   // 'YYYY-MM-DD' → '11월 3일 (월)'
   function dayLabel(dateStr) {
     const d = parse(dateStr);
@@ -1275,6 +1719,8 @@ registerSW({ immediate: true });
       .sort();
     const all = dates.flatMap((d) => db.todos[d]);
     const doneCount = all.filter((t) => t.done).length;
+    // 아직 오지 않은 달: 루틴·일기와 같은 안내 상자 (미리 적어 둔 할 일이 있으면 그 아래에 그대로)
+    const isFutureMonth = ym > todayStr().slice(0, 7);
 
     const body = dates.length
       ? `<ul class="stats-days">
@@ -1302,13 +1748,16 @@ registerSW({ immediate: true });
             })
             .join('')}
         </ul>`
-      : '<p class="empty">이 달에 쓴 할 일이 없어요.</p>';
+      : isFutureMonth
+        ? ''
+        : '<p class="empty">이 달에 쓴 할 일이 없어요.</p>';
 
     return `
       <section class="section">
         <div class="section-head">
           <h2>할 일</h2>
         </div>
+        ${isFutureMonth ? FUTURE_NOTE : ''}
         ${
           all.length
             ? `<div class="todo-total">
@@ -1360,8 +1809,10 @@ registerSW({ immediate: true });
     };
 
     const md = (d) => `${Number(d.slice(5, 7))}.${Number(d.slice(8))}`;
-    const body = written
-      ? `<div class="dweeks">
+    // 아직 오지 않은 달은 안내 문구 + 빈 위클리를 그대로 보여준다
+    const isFuture = ym > todayStr().slice(0, 7);
+    const body = written || isFuture
+      ? `${isFuture ? FUTURE_NOTE : ''}<div class="dweeks">
           ${weeks
             .map(
               (w, i) => `
@@ -1510,6 +1961,9 @@ registerSW({ immediate: true });
     if (/^#\/routine/.test(location.hash)) {
       // 루틴 관리 페이지: 로그인/로그아웃 자리에 루틴 추가 버튼
       authSlot.innerHTML = `<button type="button" class="btn primary" data-action="routine-add">+ 루틴 추가</button>`;
+    } else if (/^#\/event/.test(location.hash)) {
+      // 일정 관리 페이지: 로그인/로그아웃 자리에 일정 추가 버튼
+      authSlot.innerHTML = `<button type="button" class="btn primary" data-action="event-add">+ 일정 추가</button>`;
     } else if (authLoading) {
       authSlot.innerHTML = '';
     } else if (currentUser) {
@@ -1594,6 +2048,7 @@ registerSW({ immediate: true });
   headerTitle?.addEventListener('click', (e) => {
     if (e.target.closest('[data-action="routine-cancel"]') && routineDraft) leaveRoutineForm();
     else if (e.target.closest('[data-action="stats-back"]') && statsMonth) leaveStats();
+    else if (e.target.closest('[data-action="events-back"]') && eventPage) leaveEvents();
   });
 
   function leaveStats() {
@@ -1613,7 +2068,7 @@ registerSW({ immediate: true });
     if (hash !== '/login') loginState = null;
     // 루틴 관리·추가·수정 페이지는 로그인 후에만 (주소로 직접 들어와도 로그인 화면으로).
     // 세션 확인 중(authLoading)에는 막지 않고, 확인 결과 비로그인이면 handleSession → route 에서 다시 걸러진다
-    if (hash.startsWith('/routine') && needLogin() && !authLoading) {
+    if ((hash.startsWith('/routine') || hash.startsWith('/event')) && needLogin() && !authLoading) {
       location.replace('#/login');
       return;
     }
@@ -1624,14 +2079,29 @@ registerSW({ immediate: true });
       }
       routineDraft = null;
       statsMonth = null;
+      eventDraft = null;
+      eventPage = null;
       loginState ||= { mode: 'signIn', username: '', password: '', error: '', notice: '', submitting: false };
       renderLogin();
       focusField('.login-form input[name="username"]');
     } else if (hash === '/stats') {
       routineDraft = null;
+      eventDraft = null;
+      eventPage = null;
       if (!statsMonth) statsMonth = ui.selected.slice(0, 7);
       renderStats();
+    } else if (hash === '/events') {
+      routineDraft = null;
+      openEventForm(null, { modal: false });
+    } else if (hash === '/event/new') {
+      routineDraft = null;
+      openEventForm(null, { modal: true });
+    } else if ((m = hash.match(/^\/event\/edit\/([\w-]+)$/))) {
+      routineDraft = null;
+      openEventForm(m[1]);
     } else if (hash === '/routines') {
+      eventDraft = null;
+      eventPage = null;
       openRoutineForm(null, { modal: false });
     } else if (hash === '/routine/new') {
       openRoutineForm(null, { modal: true });
@@ -1641,6 +2111,8 @@ registerSW({ immediate: true });
       cameFromMain = false;
       routineDraft = null;
       statsMonth = null;
+      eventDraft = null;
+      eventPage = null;
       renderMain();
     }
     renderAuthSlot();
@@ -1660,6 +2132,7 @@ registerSW({ immediate: true });
     'new-routine', 'edit-routine', 'toggle-routine',
     'add-todo', 'toggle-todo', 'edit-todo', 'delete-todo',
     'edit-diary',
+    'open-events',
   ]);
 
   /** Supabase가 설정돼 있는데 로그인하지 않은 상태 */
@@ -1771,7 +2244,7 @@ registerSW({ immediate: true });
             db.todos[date] = (db.todos[date] || []).filter((x) => x.id !== id);
             if (!db.todos[date].length) delete db.todos[date];
             saveDB();
-            if (!routineDraft && !statsMonth && !loginState) renderMain();
+            if (!routineDraft && !statsMonth && !loginState && !eventPage) renderMain();
           }
         );
         break;
@@ -1828,6 +2301,97 @@ registerSW({ immediate: true });
       case 'stats-back':
         leaveStats();
         break;
+
+      /* --- 일정 --- */
+      case 'open-events':
+        // 메인 + : 선택한 날짜로 일정 관리 페이지 열기
+        eventPage = { month: ui.selected.slice(0, 7), selected: ui.selected };
+        goRoutine('/events');
+        break;
+      case 'ev-select':
+        if (!eventPage) break;
+        eventPage.selected = el.dataset.date;
+        renderEventPage();
+        break;
+      case 'ev-month': {
+        if (!eventPage) break;
+        eventPage.month = shiftMonth(eventPage.month, Number(el.dataset.delta));
+        const t = todayStr();
+        // 바뀐 달에 오늘이 있으면 오늘, 아니면 1일 선택
+        eventPage.selected = t.startsWith(eventPage.month) ? t : `${eventPage.month}-01`;
+        renderEventPage();
+        break;
+      }
+      case 'open-event':
+        location.replace(`#/event/edit/${id}`);
+        break;
+      case 'ev-repeat':
+        eventDraft.repeat = el.dataset.repeat;
+        renderEventPage();
+        break;
+      case 'ev-picker': {
+        const f = el.dataset.field;
+        if (eventDraft.picker?.field === f) eventDraft.picker = null;
+        else eventDraft.picker = { field: f, month: (eventDraft[f] || eventDraft.start || todayStr()).slice(0, 7) };
+        renderEventPage();
+        if (eventDraft.picker && f.endsWith('Time')) centerTimeColumns();
+        break;
+      }
+      case 'ev-pick-month':
+        eventDraft.picker.month = shiftMonth(eventDraft.picker.month, Number(el.dataset.delta));
+        renderEventPage();
+        break;
+      case 'ev-pick-date': {
+        const f = eventDraft.picker.field;
+        eventDraft[f] = el.dataset.date;
+        // 종료일이 시작일보다 앞이면 시작일로 맞춘다
+        if (f === 'start' && eventDraft.end < eventDraft.start) eventDraft.end = eventDraft.start;
+        eventDraft.picker = null;
+        renderEventPage();
+        break;
+      }
+      case 'ev-pick-hour': {
+        const f = eventDraft.picker.field;
+        const mm = (eventDraft[f] || '09:00').split(':')[1];
+        eventDraft[f] = `${pad(Number(el.dataset.h))}:${mm}`;
+        renderEventPage(); // 시를 고른 뒤 분을 고를 수 있게 팝업 유지
+        centerTimeColumns();
+        break;
+      }
+      case 'ev-pick-min': {
+        const f = eventDraft.picker.field;
+        const hh = (eventDraft[f] || '09:00').split(':')[0];
+        eventDraft[f] = `${hh}:${pad(Number(el.dataset.m))}`;
+        eventDraft.picker = null;
+        renderEventPage();
+        break;
+      }
+      case 'ev-allday':
+        if (!eventDraft) break;
+        eventDraft.picker = null;
+        eventDraft.allDay = el.checked;
+        renderEventPage();
+        break;
+      case 'ev-color':
+        eventDraft.color = el.dataset.color;
+        renderEventPage();
+        break;
+      case 'event-close':
+        closeEventEditor();
+        break;
+      case 'event-delete': {
+        const eid = eventDraft.id;
+        void showDialog({ message: '이 일정을 삭제할까요?', confirmText: '삭제', cancelText: '취소', danger: true }).then(
+          (ok) => {
+            if (!ok || !eventDraft || eventDraft.id !== eid) return;
+            db.events = (db.events || []).filter((x) => x.id !== eid);
+            saveDB();
+            closeEventEditor();
+            showToast('일정을 삭제했어요.');
+          }
+        );
+        break;
+      }
 
       case 'open-routine':
         if (routineDraft && routineDraft.id === id) break;
@@ -1916,6 +2480,22 @@ registerSW({ immediate: true });
     else if (name === 'memo') routineDraft.memo = value;
   });
 
+  // 일정 폼: 입력값을 draft에 유지 (재렌더링 시 보존)
+  view.addEventListener('input', (e) => {
+    if (!eventDraft) return;
+    const { name, value } = e.target;
+    if (!['title', 'place', 'memo'].includes(name)) return;
+    eventDraft[name] = value;
+  });
+
+  // 일정 기간 선택기 바깥을 누르면 닫기
+  document.addEventListener('click', (e) => {
+    if (eventDraft && eventDraft.picker && !e.target.closest('.picker-wrap')) {
+      eventDraft.picker = null;
+      renderEventPage();
+    }
+  });
+
   // 이모지 팝업 바깥을 누르면 닫기
   document.addEventListener('click', (e) => {
     if (routineDraft && routineDraft.pickerOpen && !e.target.closest('.emoji-wrap')) {
@@ -1957,6 +2537,43 @@ registerSW({ immediate: true });
       ui.diaryEditing = false;
       saveDB();
       renderMain();
+    } else if (type === 'event') {
+      const r = eventDraft;
+      r.title = r.title.trim();
+      if (!r.title) {
+        r.error = '일정을 입력해주세요.';
+        renderEventPage();
+        return focusField('#event-title');
+      }
+      if (!r.start) {
+        void showDialog({ message: '시작일을 선택해주세요.' });
+        return;
+      }
+      if (!r.end || r.end < r.start) r.end = r.start;
+      if (!r.allDay && r.start === r.end && r.startTime && r.endTime && r.endTime < r.startTime) {
+        void showDialog({ message: '종료 시각이 시작 시각보다 빨라요.' });
+        return;
+      }
+      const data = {
+        title: r.title,
+        start: r.start,
+        end: r.end,
+        allDay: r.allDay,
+        startTime: r.allDay ? '' : r.startTime || '',
+        endTime: r.allDay ? '' : r.endTime || '',
+        place: r.place.trim(),
+        repeat: r.repeat,
+        color: r.color,
+        memo: r.memo.trim(),
+      };
+      r.error = '';
+      db.events ||= [];
+      if (r.id) Object.assign(db.events.find((x) => x.id === r.id), data);
+      else db.events.push({ id: uid(), ...data });
+      saveDB();
+      if (eventPage) eventPage.selected = eventPage.selected || r.start;
+      closeEventEditor();
+      showToast(r.id ? '일정을 저장했어요.' : '일정을 추가했어요.');
     } else if (type === 'routine') {
       const r = routineDraft;
       r.name = r.name.trim();
@@ -1991,6 +2608,15 @@ registerSW({ immediate: true });
   // ESC로 인라인 입력 취소
   view.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
+    if (eventDraft) {
+      if (eventDraft.picker) {
+        eventDraft.picker = null;
+        renderEventPage();
+      } else {
+        closeEventEditor();
+      }
+      return;
+    }
     if (routineDraft) {
       // 루틴 추가·수정 팝업: ESC로 닫기 (이모지 선택창이 열려 있으면 그것만 닫기)
       if (routineDraft.pickerOpen) {
@@ -2014,6 +2640,10 @@ registerSW({ immediate: true });
   authSlot?.addEventListener('click', (e) => {
     if (e.target.closest('[data-action="routine-add"]')) {
       location.replace('#/routine/new');
+      return;
+    }
+    if (e.target.closest('[data-action="event-add"]')) {
+      location.replace('#/event/new');
       return;
     }
     if (!e.target.closest('[data-action="sign-out"]') || !supabase) return;
