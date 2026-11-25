@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { registerSW } from 'virtual:pwa-register';
+import KoreanLunarCalendar from 'korean-lunar-calendar';
 
 // 앱(PWA) 설치·오프라인용 서비스 워커 등록. 새 버전이 배포되면 자동으로 갱신된다
 registerSW({ immediate: true });
@@ -423,6 +424,8 @@ registerSW({ immediate: true });
     todoAdding: false,
     todoEditingId: null,
     diaryEditing: false,
+    calOpen: false, // 메인 달력: 한 달 전체 펼침
+    calMonth: null, // 펼친 달력에 보이는 달 'YYYY-MM'
   };
 
   let routineDraft = null; // 루틴 설정 페이지 입력값
@@ -528,16 +531,24 @@ registerSW({ immediate: true });
     const today = todayStr();
     const showTodayBtn = !days.includes(today) || ui.selected !== today;
 
+    // ▼ 를 누르면 주간 줄 대신 한 달 전체 달력 (날짜를 고르면 다시 접힘)
+    const calMonth = ui.calMonth || ui.selected.slice(0, 7);
+    const [cy, cm] = calMonth.split('-').map(Number);
+
     return `
-      <section class="calendar">
+      <section class="calendar ${ui.calOpen ? 'open' : ''}">
         <div class="calendar-top">
-          <span class="calendar-month">${month}</span>
+          <button type="button" class="calendar-month cal-toggle" data-action="cal-toggle"
+                  aria-expanded="${ui.calOpen}" aria-label="${ui.calOpen ? '달력 접기' : '달력 전체 보기'}">
+            ${ui.calOpen ? `${cy}년 ${cm}월` : month}
+            <span class="cal-caret" aria-hidden="true"><svg viewBox="0 0 12 12" width="10" height="10"><path d="M2.2 4.2h7.6a.6.6 0 0 1 .47.97L6.47 9.6a.6.6 0 0 1-.94 0L1.73 5.17a.6.6 0 0 1 .47-.97z" fill="currentColor" /></svg></span>
+          </button>
           <div class="calendar-tools">
             ${showTodayBtn ? '<button class="today-btn" data-action="go-today">오늘</button>' : ''}
             <button class="today-btn stats-btn" data-action="open-stats" aria-label="월간 현황" title="월간 현황">${STATS_ICON}</button>
           </div>
         </div>
-        <div class="calendar-row">
+        ${ui.calOpen ? renderMonthPicker(calMonth) : `<div class="calendar-row">
           <button class="nav-btn" data-action="prev-week" aria-label="이전 주">&lsaquo;</button>
           <div class="days">
             ${days
@@ -561,8 +572,40 @@ registerSW({ immediate: true });
               .join('')}
           </div>
           <button class="nav-btn" data-action="next-week" aria-label="다음 주">&rsaquo;</button>
-        </div>
+        </div>`}
       </section>`;
+  }
+
+  /** 메인 달력을 펼쳤을 때의 한 달 전체 (기록 있는 날 점, 선택일 금색, 오늘 테두리) */
+  function renderMonthPicker(ym) {
+    const days = monthDays(ym);
+    const lead = parse(days[0]).getDay();
+    const today = todayStr();
+    return `
+      <div class="cal-month">
+        <div class="cal-month-nav">
+          <button class="nav-btn sm" data-action="cal-month" data-delta="-1" aria-label="이전 달">&lsaquo;</button>
+          <button class="nav-btn sm" data-action="cal-month" data-delta="1" aria-label="다음 달">&rsaquo;</button>
+        </div>
+        <div class="dp-grid">
+          ${WEEKDAYS.map((w, i) => `<span class="dp-wd ${i === 0 ? 'sun' : i === 6 ? 'sat' : ''}">${w}</span>`).join('')}
+          ${'<span></span>'.repeat(lead)}
+          ${days
+            .map((d) => {
+              const dow = parse(d).getDay();
+              const cls = [
+                'dp-day', 'cal-day',
+                d === ui.selected ? 'on' : '',
+                d === today ? 'today' : '',
+                dow === 0 ? 'sun' : dow === 6 ? 'sat' : '',
+                hasData(d) ? 'has-data' : '',
+              ].join(' ');
+              return `<button type="button" class="${cls}" data-action="cal-pick" data-date="${d}" aria-label="${dayLabel(d)}">
+                        ${Number(d.slice(8))}<i class="dot"></i></button>`;
+            })
+            .join('')}
+        </div>
+      </div>`;
   }
 
   function renderRoutines() {
@@ -1006,7 +1049,7 @@ registerSW({ immediate: true });
 
   /* =========================================================
    * 일정 (#/events, #/event/new, #/event/edit/:id)
-   * 일정: { id, title, start, end, startTime, endTime, place, repeat, color, memo }
+   * 일정: { id, title, start, end, startTime, endTime, place, repeat, lunar, color, memo }
    *  - start/end: 'YYYY-MM-DD' (기간), startTime/endTime 'HH:MM' (선택, 비우면 날짜만)
    *  - repeat: 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly' (시작일 기준으로 반복, 기간 길이 유지)
    * ========================================================= */
@@ -1019,9 +1062,60 @@ registerSW({ immediate: true });
   ];
 
   /** 반복 규칙상 b 날짜에 일정이 "시작"하는지 */
+  /* --- 음력 (한국천문연구원 기준 korean-lunar-calendar, 1000~2050년) ---
+   * 일정의 start/end 는 항상 양력으로 저장하고, lunar: true 면
+   *  - 입력할 때 음력 달력으로 고르고(양력으로 바꿔 저장)
+   *  - 매월/매년 반복을 음력 날짜 기준으로 계산한다 (예: 음력 생일) */
+  const lunarCal = new KoreanLunarCalendar();
+  const lunarCache = new Map();
+
+  /** 양력 'YYYY-MM-DD' → { y, m, d, leap } (범위 밖이면 null) */
+  function toLunar(d) {
+    if (lunarCache.has(d)) return lunarCache.get(d);
+    const [y, m, dd] = d.split('-').map(Number);
+    let out = null;
+    if (lunarCal.setSolarDate(y, m, dd)) {
+      const L = lunarCal.getLunarCalendar();
+      out = { y: L.year, m: L.month, d: L.day, leap: !!L.intercalation };
+    }
+    lunarCache.set(d, out);
+    return out;
+  }
+
+  /** 음력 → 양력 'YYYY-MM-DD' (없는 날짜면 null — 30일이 없는 달, 윤달이 없는 해 등) */
+  function fromLunar(y, m, d, leap = false) {
+    if (!lunarCal.setLunarDate(y, m, d, leap)) return null;
+    const S = lunarCal.getSolarCalendar();
+    const out = `${S.year}-${pad(S.month)}-${pad(S.day)}`;
+    const back = toLunar(out); // 라이브러리가 없는 날짜도 넘겨줄 때가 있어 되돌려서 확인
+    return back && back.m === m && back.d === d && back.leap === leap ? out : null;
+  }
+  const lunarMonthLength = (y, m, leap) => (fromLunar(y, m, 30, leap) ? 30 : 29);
+  const hasLeapMonth = (y, m) => Boolean(fromLunar(y, m, 1, true));
+
+  /** 음력 달 이동 (윤달 포함 순서: … 6월 → 윤6월 → 7월 …) */
+  function shiftLunarMonth({ y, m, leap }, delta) {
+    if (delta > 0) {
+      if (!leap && hasLeapMonth(y, m)) return { y, m, leap: true };
+      return m === 12 ? { y: y + 1, m: 1, leap: false } : { y, m: m + 1, leap: false };
+    }
+    if (leap) return { y, m, leap: false };
+    const p = m === 1 ? { y: y - 1, m: 12 } : { y, m: m - 1 };
+    return { ...p, leap: hasLeapMonth(p.y, p.m) };
+  }
+
   function eventStartsOn(ev, b) {
     if (b < ev.start) return false;
     if (b === ev.start) return true;
+    // 음력 일정의 매월·매년 반복: 음력 날짜가 같은 날
+    if (ev.lunar && (ev.repeat === 'monthly' || ev.repeat === 'yearly')) {
+      const L = toLunar(b);
+      const S = toLunar(ev.start);
+      if (!L || !S || L.d !== S.d) return false;
+      if (ev.repeat === 'monthly') return true;
+      // 매년: 같은 음력 월·일 (윤달에 시작한 일정도 해마다는 평달 기준으로)
+      return L.m === S.m && !L.leap;
+    }
     const s = parse(ev.start);
     const t = parse(b);
     switch (ev.repeat) {
@@ -1198,14 +1292,56 @@ registerSW({ immediate: true });
       <div class="picker-wrap ${isTime ? 'time' : 'date'}">
         <button type="button" class="field picker-btn ${open ? 'open' : ''}" data-action="ev-picker" data-field="${field}"
                 aria-label="${label}" aria-expanded="${open}" ${isTime && r.allDay ? 'disabled' : ''}>
-          <span>${isTime ? pickTimeText(r[field]) : pickDateText(r[field])}</span>${isTime ? CLOCK_ICON : CAL_ICON}
+          <span>${isTime ? pickTimeText(r[field]) : r.lunar ? lunarDateText(r[field]) : pickDateText(r[field])}</span>${isTime ? CLOCK_ICON : CAL_ICON}
         </button>
         ${open ? (isTime ? renderTimePop(field) : renderDatePop(field)) : ''}
       </div>`;
   }
 
+  /** 음력 날짜 문구: '음 10. 17' (윤달이면 '음 윤6. 3') */
+  function lunarDateText(d) {
+    const L = d && toLunar(d);
+    return L ? `음 ${L.leap ? '윤' : ''}${L.m}. ${L.d}` : '날짜 선택';
+  }
+
+  /** 음력 달력: 음력 날짜(크게) + 그날의 양력 날짜(작게). 고르면 양력으로 저장 */
+  function renderLunarPop(field) {
+    const r = eventDraft;
+    const { y, m, leap } = r.picker.lunar;
+    const len = lunarMonthLength(y, m, leap);
+    const today = todayStr();
+    const min = field === 'end' ? r.start : '';
+    const first = fromLunar(y, m, 1, leap);
+    const lead = first ? parse(first).getDay() : 0;
+    const cells = Array.from({ length: len }, (_, i) => {
+      const d = fromLunar(y, m, i + 1, leap);
+      if (!d) return '<span></span>';
+      const dt = parse(d);
+      const dow = dt.getDay();
+      const cls = ['dp-day', 'lunar', d === r[field] ? 'on' : '', d === today ? 'today' : '', dow === 0 ? 'sun' : dow === 6 ? 'sat' : ''].join(' ');
+      return `<button type="button" class="${cls}" data-action="ev-pick-date" data-date="${d}" ${min && d < min ? 'disabled' : ''}
+                title="양력 ${dt.getMonth() + 1}월 ${dt.getDate()}일"><b>${i + 1}</b><small>${dt.getMonth() + 1}/${dt.getDate()}</small></button>`;
+    }).join('');
+    return `
+      <div class="picker-pop dp" role="dialog" aria-label="음력 날짜 선택">
+        <div class="dp-head">
+          <button type="button" class="dp-nav" data-action="ev-pick-month" data-delta="-1" aria-label="이전 달">&lsaquo;</button>
+          <strong>${y}년 ${leap ? '윤' : ''}${m}월 <span class="dp-badge">음력</span></strong>
+          <button type="button" class="dp-nav" data-action="ev-pick-month" data-delta="1" aria-label="다음 달">&rsaquo;</button>
+        </div>
+        <div class="dp-grid">
+          ${WEEKDAYS.map((w, i) => `<span class="dp-wd ${i === 0 ? 'sun' : i === 6 ? 'sat' : ''}">${w}</span>`).join('')}
+          ${'<span></span>'.repeat(lead)}${cells}
+        </div>
+        <div class="dp-foot">
+          <button type="button" class="dp-today" data-action="ev-pick-date" data-date="${today}" ${min && today < min ? 'disabled' : ''}>오늘</button>
+        </div>
+      </div>`;
+  }
+
   function renderDatePop(field) {
     const r = eventDraft;
+    if (r.lunar) return renderLunarPop(field);
     const ym = r.picker.month;
     const [y, m] = ym.split('-').map(Number);
     const days = monthDays(ym);
@@ -1278,13 +1414,23 @@ registerSW({ immediate: true });
         <div class="form-group">
           <div class="label-row">
             <span class="label">기간</span>
-            <label class="check-inline">
-              <input type="checkbox" data-action="ev-allday" ${r.allDay ? 'checked' : ''} /> 하루 종일
-            </label>
+            <div class="label-checks">
+              <label class="check-inline">
+                <input type="checkbox" data-action="ev-lunar" ${r.lunar ? 'checked' : ''} /> 음력
+              </label>
+              <label class="check-inline">
+                <input type="checkbox" data-action="ev-allday" ${r.allDay ? 'checked' : ''} /> 하루 종일
+              </label>
+            </div>
           </div>
           <div class="period-row">${periodField('start')}${periodField('startTime')}</div>
           <div class="period-sep" aria-hidden="true">~</div>
           <div class="period-row">${periodField('end')}${periodField('endTime')}</div>
+          ${
+            r.lunar
+              ? `<p class="lunar-hint">양력 ${pickDateText(r.start)}${r.end !== r.start ? ` ~ ${pickDateText(r.end)}` : ''}</p>`
+              : ''
+          }
         </div>
 
         <div class="form-group">
@@ -2182,7 +2328,28 @@ registerSW({ immediate: true });
         renderMain();
         break;
       }
+      case 'cal-toggle':
+        ui.calOpen = !ui.calOpen;
+        ui.calMonth = ui.selected.slice(0, 7);
+        renderMain();
+        break;
+      case 'cal-month':
+        ui.calMonth = shiftMonth(ui.calMonth || ui.selected.slice(0, 7), Number(el.dataset.delta));
+        renderMain();
+        break;
+      case 'cal-pick': {
+        const d = el.dataset.date;
+        // 지금 보이는 주 안이면 주는 그대로, 아니면 그 날짜부터 한 주 (오늘 버튼과 같은 방식)
+        const offset = diffDays(d, ui.weekStart);
+        if (offset < 0 || offset > 6) ui.weekStart = d;
+        ui.selected = d;
+        ui.calOpen = false;
+        resetEditing();
+        renderMain();
+        break;
+      }
       case 'go-today':
+        ui.calOpen = false;
         ui.weekStart = todayStr();
         ui.selected = todayStr();
         resetEditing();
@@ -2332,13 +2499,36 @@ registerSW({ immediate: true });
       case 'ev-picker': {
         const f = el.dataset.field;
         if (eventDraft.picker?.field === f) eventDraft.picker = null;
-        else eventDraft.picker = { field: f, month: (eventDraft[f] || eventDraft.start || todayStr()).slice(0, 7) };
+        else {
+          const base = eventDraft[f] || eventDraft.start || todayStr();
+          const L = toLunar(base);
+          eventDraft.picker = {
+            field: f,
+            month: base.slice(0, 7),
+            lunar: L ? { y: L.y, m: L.m, leap: L.leap } : null,
+          };
+        }
         renderEventPage();
         if (eventDraft.picker && f.endsWith('Time')) centerTimeColumns();
         break;
       }
-      case 'ev-pick-month':
-        eventDraft.picker.month = shiftMonth(eventDraft.picker.month, Number(el.dataset.delta));
+      case 'ev-pick-month': {
+        const p = eventDraft.picker;
+        const delta = Number(el.dataset.delta);
+        if (eventDraft.lunar && p.lunar) {
+          const next = shiftLunarMonth(p.lunar, delta);
+          if (fromLunar(next.y, next.m, 1, next.leap)) p.lunar = next; // 변환 범위(1000~2050년) 안에서만
+        } else {
+          p.month = shiftMonth(p.month, delta);
+        }
+        renderEventPage();
+        break;
+      }
+      case 'ev-lunar':
+        if (!eventDraft) break;
+        // 날짜는 그대로(양력 기준 같은 날), 입력 달력과 반복 기준만 음력으로
+        eventDraft.lunar = el.checked;
+        eventDraft.picker = null;
         renderEventPage();
         break;
       case 'ev-pick-date': {
@@ -2563,6 +2753,7 @@ registerSW({ immediate: true });
         endTime: r.allDay ? '' : r.endTime || '',
         place: r.place.trim(),
         repeat: r.repeat,
+        lunar: Boolean(r.lunar),
         color: r.color,
         memo: r.memo.trim(),
       };

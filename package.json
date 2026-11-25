@@ -8,7 +8,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.86.0"
+    "@supabase/supabase-js": "^2.86.0",
+    "korean-lunar-calendar": "^0.4.0"
   },
   "devDependencies": {
     "vite": "^6.4.1",

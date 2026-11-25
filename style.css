@@ -1131,3 +1131,50 @@ div.event-card:hover { background: color-mix(in srgb, var(--ec) 30%, #fff); }
 }
 .tp-col button:hover:not(.on) { background: var(--tint); }
 .tp-col button.on { background: var(--gold); color: var(--mist); font-weight: 700; }
+
+/* ---------- 일정 음력 입력 ---------- */
+.label-checks { display: inline-flex; align-items: center; gap: 0.75rem; }
+.dp-badge {
+  margin-left: 0.25rem; padding: 0.0625rem 0.375rem; border-radius: 999px;
+  background: rgba(248, 229, 186, 0.7); color: #b8892e;
+  font-size: 0.625rem; font-weight: 700; vertical-align: middle;
+}
+/* 음력 달력 칸: 음력 날짜(크게) + 양력 날짜(작게) */
+.dp-day.lunar { height: 2.375rem; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.0625rem; line-height: 1; }
+.dp-day.lunar b { font-size: 0.8125rem; }
+.dp-day.lunar small { font-size: 0.5625rem; font-weight: 400; color: var(--ink-soft); }
+.dp-day.lunar.on small { color: var(--mist); }
+/* 음력으로 고른 날짜의 양력 변환 안내 */
+.lunar-hint {
+  margin: 0.5rem 0 0; padding: 0.375rem 0.625rem; border-radius: 0.625rem;
+  background: rgba(248, 229, 186, 0.35);
+  font-size: 0.75rem; color: var(--ink-soft);
+}
+
+/* ---------- 메인 달력 펼치기 (▼) ---------- */
+.cal-toggle {
+  display: inline-flex; align-items: center; gap: 0.25rem;
+  border: none; background: none; padding: 0.125rem 0.375rem; margin-left: -0.375rem;
+  border-radius: 0.625rem; font: inherit; font-weight: 700; color: var(--sea-deep); cursor: pointer;
+}
+.cal-toggle:hover { background: var(--tint); }
+/* 펼침 아이콘: 달 이동 < > (얇은 꺾쇠)와 구분되게 꽉 찬 둥근 삼각형 ▼ 배지. 펼치면 위로 돌고 금색 */
+.cal-caret {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.25rem; height: 1.25rem; border-radius: 50%;
+  background: var(--tint); color: var(--sea);
+  transition: transform .2s ease, background .2s ease, color .2s ease;
+}
+.cal-caret svg { display: block; margin-top: 1px; }
+.calendar.open .cal-caret { transform: rotate(180deg);}
+.cal-month { position: relative; padding: 0 0.25rem; animation: modal-fade .15s ease; }
+/* 달 이동 버튼: 펼친 달력 위 양쪽 */
+.cal-month-nav { display: flex; justify-content: space-between; margin: -0.25rem 0 0.125rem; }
+.cal-month-nav .nav-btn { height: 1.75rem; }
+.cal-day { position: relative; height: 2.25rem; }
+.cal-day .dot {
+  position: absolute; left: 50%; bottom: 0.25rem; transform: translateX(-50%);
+  width: 0.25rem; height: 0.25rem; border-radius: 50%; background: transparent;
+}
+.cal-day.has-data .dot { background: var(--sea); }
+.cal-day.on.has-data .dot { background: var(--sand); }
