@@ -401,6 +401,12 @@ registerSW({ immediate: true });
          stroke-linecap="round" aria-hidden="true">
       <path d="M4 4l8 8M12 4l-8 8" />
     </svg>`;
+  // 섹션 + 버튼: 글자 '+'는 글꼴마다 위치가 달라 가운데가 안 맞아서 SVG로 그린다 (45° 돌리면 ×)
+  const PLUS_ICON = `
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"
+         stroke-linecap="round" aria-hidden="true">
+      <path d="M8 2.5v11M2.5 8h11" />
+    </svg>`;
   // 내일로 미루기 (오른쪽 화살표 + 세로줄)
   const POSTPONE_ICON = `
     <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"
@@ -641,7 +647,7 @@ registerSW({ immediate: true });
       <section class="section">
         <div class="section-head">
           <h2>습관${list.length ? `<span class="count">${doneCount}/${list.length}</span>` : ''}</h2>
-          <button class="add-btn" data-action="new-routine" aria-label="습관 추가">+</button>
+          <button class="add-btn" data-action="new-routine" aria-label="습관 추가">${PLUS_ICON}</button>
         </div>
         ${list.length ? `<ul class="list">${items}</ul>` : '<p class="empty">이 날짜에 해당하는 습관이 없어요.</p>'}
       </section>`;
@@ -697,7 +703,7 @@ registerSW({ immediate: true });
         <div class="section-head">
           <h2>할 일${todos.length ? `<span class="count">${doneCount}/${todos.length}</span>` : ''}</h2>
           <button class="add-btn ${editMode ? 'on' : ''}" data-action="add-todo"
-                  aria-label="${editMode ? '편집 닫기' : '할 일 편집'}" title="${editMode ? '편집 닫기' : '할 일 추가·수정·삭제'}">+</button>
+                  aria-label="${editMode ? '편집 닫기' : '할 일 편집'}" title="${editMode ? '편집 닫기' : '할 일 추가·수정·삭제'}">${PLUS_ICON}</button>
         </div>
         ${todos.length || addRow ? `<ul class="list">${items}${addRow}</ul>` : '<p class="empty">등록된 할 일이 없어요.</p>'}
       </section>`;
@@ -744,7 +750,7 @@ registerSW({ immediate: true });
       ? ''
       : written
         ? `<button class="add-btn icon" data-action="edit-diary" aria-label="일기 수정" title="일기 수정">${EDIT_ICON}</button>`
-        : '<button class="add-btn" data-action="edit-diary" aria-label="일기 작성" title="일기 작성">+</button>';
+        : `<button class="add-btn" data-action="edit-diary" aria-label="일기 작성" title="일기 작성">${PLUS_ICON}</button>`;
 
     return `
       <section class="section">
@@ -1203,7 +1209,7 @@ registerSW({ immediate: true });
       <section class="section">
         <div class="section-head">
           <h2>일정${list.length ? `<span class="count">${list.length}</span>` : ''}</h2>
-          <button class="add-btn" data-action="open-events" aria-label="일정 관리">+</button>
+          <button class="add-btn" data-action="open-events" aria-label="일정 관리">${PLUS_ICON}</button>
         </div>
         ${
           list.length

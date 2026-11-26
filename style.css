@@ -282,7 +282,9 @@ body[data-route="login"] .app-header { display: none; }
   color: var(--sea-deep);
   font-size: 1.25rem;
   line-height: 1;
+  padding: 0; /* 브라우저 기본 버튼 여백이 아이콘을 밀지 않게 */
 }
+.add-btn svg { display: block; flex: none; }
 .add-btn:hover { background: var(--gold); }
 .add-btn { display: inline-flex; align-items: center; justify-content: center; transition: transform 0.2s ease; }
 /* 할 일 편집 모드: + 가 45° 돌아 × (닫기) 모양 */
@@ -423,6 +425,8 @@ textarea.diary-input { /* textarea.field(resize: vertical)보다 우선 */
 .stat-item:first-child { border-top: none; }
 .stat-top { display: flex; align-items: center; gap: 0.625rem; }
 .stat-top .text { flex: 1; min-width: 0; }
+/* 월간 현황 습관명: 할 일 목록(.stats-todo)과 같은 글자 크기 */
+.stat-top .sort-name { font-size: 0.875rem; }
 .stat-rate { text-align: right; flex: none; }
 .stat-rate strong { font-size: 1.125rem; color: var(--sea-deep); }
 .muted { color: var(--ink-soft); }
