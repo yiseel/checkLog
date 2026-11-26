@@ -11,7 +11,7 @@ export default defineConfig({
       manifest: {
         name: 'Check Log',
         short_name: 'Check Log',
-        description: '루틴 · 할 일 · 일기로 남기는 하루 기록',
+        description: '습관 · 할 일 · 일기로 남기는 하루 기록',
         lang: 'ko',
         id: '/',
         start_url: '/',

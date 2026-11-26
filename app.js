@@ -166,7 +166,7 @@ registerSW({ immediate: true });
         resetEditing();
         if (!routineDraft) route();
       }
-      // 비로그인으로 확인됐는데 루틴·일정 페이지에 있으면 로그인 화면으로
+      // 비로그인으로 확인됐는데 습관·일정 페이지에 있으면 로그인 화면으로
       if (/^#\/(routine|event)/.test(location.hash)) route();
       return;
     }
@@ -401,6 +401,12 @@ registerSW({ immediate: true });
          stroke-linecap="round" aria-hidden="true">
       <path d="M4 4l8 8M12 4l-8 8" />
     </svg>`;
+  // 내일로 미루기 (오른쪽 화살표 + 세로줄)
+  const POSTPONE_ICON = `
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M2.5 8h8M7.5 4.5L11 8l-3.5 3.5" /><path d="M13.5 3.5v9" />
+    </svg>`;
 
   const STATS_ICON = `
     <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8"
@@ -428,7 +434,7 @@ registerSW({ immediate: true });
     calMonth: null, // 펼친 달력에 보이는 달 'YYYY-MM'
   };
 
-  let routineDraft = null; // 루틴 설정 페이지 입력값
+  let routineDraft = null; // 습관 설정 페이지 입력값
   let eventDraft = null; // 일정 추가·수정 팝업 입력값
   let cameFromMain = false;
 
@@ -437,11 +443,11 @@ registerSW({ immediate: true });
   const headerSub = document.getElementById('header-sub');
 
   /* =========================================================
-   * 루틴 도메인
+   * 습관 도메인
    * ========================================================= */
-  // 루틴 색상 (파스텔): 파랑 · 초록 · 노랑 · 코랄 · 보라 · 민트 · 분홍 · 회색
+  // 습관 색상 (파스텔): 파랑 · 초록 · 노랑 · 코랄 · 보라 · 민트 · 분홍 · 회색
   const COLORS = ['#a3bdf2', '#a8dcb5', '#f6d58e', '#f4aaa6', '#c9b0ea', '#97d6cf', '#f5b5d2', '#bcc2cc'];
-  // 예전(진한) 색으로 저장된 루틴은 같은 자리의 파스텔 색으로 보여준다 (다시 저장하면 새 색으로 바뀜)
+  // 예전(진한) 색으로 저장된 습관은 같은 자리의 파스텔 색으로 보여준다 (다시 저장하면 새 색으로 바뀜)
   const OLD_COLORS = ['#4f6bed', '#22a06b', '#f5a524', '#e5484d', '#8e4ec6', '#12a594', '#e93d82', '#6b7280'];
   const routineColor = (c) => {
     const i = OLD_COLORS.indexOf(String(c || '').toLowerCase());
@@ -624,7 +630,7 @@ registerSW({ immediate: true });
             <input type="checkbox" data-action="toggle-routine" data-id="${r.id}" ${checked ? 'checked' : ''} aria-label="${esc(r.name)} 완료" />
             ${r.emoji ? `<span class="routine-emoji">${esc(r.emoji)}</span>` : ''}
             <div class="text">
-              <button class="routine-name" data-action="edit-routine" data-id="${r.id}">${esc(r.name)}</button>
+              <span class="routine-name">${esc(r.name)}</span>
               <span class="routine-meta">${esc(meta)}</span>
             </div>
           </li>`;
@@ -634,10 +640,10 @@ registerSW({ immediate: true });
     return `
       <section class="section">
         <div class="section-head">
-          <h2>루틴${list.length ? `<span class="count">${doneCount}/${list.length}</span>` : ''}</h2>
-          <button class="add-btn" data-action="new-routine" aria-label="루틴 추가">+</button>
+          <h2>습관${list.length ? `<span class="count">${doneCount}/${list.length}</span>` : ''}</h2>
+          <button class="add-btn" data-action="new-routine" aria-label="습관 추가">+</button>
         </div>
-        ${list.length ? `<ul class="list">${items}</ul>` : '<p class="empty">이 날짜에 해당하는 루틴이 없어요.</p>'}
+        ${list.length ? `<ul class="list">${items}</ul>` : '<p class="empty">이 날짜에 해당하는 습관이 없어요.</p>'}
       </section>`;
   }
 
@@ -675,7 +681,8 @@ registerSW({ immediate: true });
           <li class="item todo-item ${t.done ? 'done' : ''}">
             <input type="checkbox" data-action="toggle-todo" data-id="${t.id}" ${t.done ? 'checked' : ''} aria-label="완료" />
             <span class="text">${esc(t.text)}</span>
-            ${editMode ? `
+            ${editMode ? `${t.done ? '' : `
+            <button class="btn sm icon" data-action="postpone-todo" data-id="${t.id}" aria-label="내일로 미루기" title="내일로 미루기">${POSTPONE_ICON}</button>`}
             <button class="btn sm icon" data-action="edit-todo" data-id="${t.id}" aria-label="수정" title="수정">${EDIT_ICON}</button>
             <button class="btn sm icon danger" data-action="delete-todo" data-id="${t.id}" aria-label="삭제" title="삭제">${DELETE_ICON}</button>` : ''}
           </li>`;
@@ -769,12 +776,12 @@ registerSW({ immediate: true });
   }
 
   /* =========================================================
-   * 루틴 설정 페이지 렌더링
+   * 습관 설정 페이지 렌더링
    * ========================================================= */
   /**
-   * 루틴 관리 페이지 진입.
-   *  - id 있음: 루틴 수정 팝업 (#/routine/edit/:id)
-   *  - id 없음 + modal: 루틴 추가 팝업 (#/routine/new)
+   * 습관 관리 페이지 진입.
+   *  - id 있음: 습관 수정 팝업 (#/routine/edit/:id)
+   *  - id 없음 + modal: 습관 추가 팝업 (#/routine/new)
    *  - id 없음 + !modal: 목록만 (#/routines)
    */
   function openRoutineForm(id, { modal = true } = {}) {
@@ -844,21 +851,21 @@ registerSW({ immediate: true });
       </div>`;
   }
 
-  // 루틴 설정 페이지 상단: 전체 루틴 목록 (드래그로 순서 변경)
+  // 습관 설정 페이지 상단: 전체 습관 목록 (드래그로 순서 변경)
   function renderRoutineSortList(currentId) {
     if (!db.routines.length) {
       return `
       <section class="section">
         <div class="section-head">
-          <h2>내 루틴 목록<span class="count">0</span></h2>
+          <h2>내 습관 목록<span class="count">0</span></h2>
         </div>
-        <p class="empty">등록된 루틴이 없어요.</p>
+        <p class="empty">등록된 습관이 없어요.</p>
       </section>`;
     }
     return `
       <section class="section">
         <div class="section-head">
-          <h2>내 루틴 목록<span class="count">${db.routines.length}</span></h2>
+          <h2>내 습관 목록<span class="count">${db.routines.length}</span></h2>
           <span class="hint sort-hint" style="margin:0">${GRIP_ICON}를 끌어서 순서 변경</span>
         </div>
         <ul class="list sort-list">
@@ -927,20 +934,20 @@ registerSW({ immediate: true });
     const isEdit = !!r.id;
     const weekOrder = [1, 2, 3, 4, 5, 6, 0];
 
-    // 루틴 관리 페이지에서는 header의 CheckLog 제목 자리에 뒤로가기 + 페이지 제목을 둔다
+    // 습관 관리 페이지에서는 header의 CheckLog 제목 자리에 뒤로가기 + 페이지 제목을 둔다
     setHeaderTitle(`
       <div class="page-title">
         <button class="back-btn" data-action="routine-cancel" aria-label="뒤로가기">&lsaquo;</button>
-        <h2>루틴 관리</h2>
+        <h2>습관 관리</h2>
       </div>`);
 
     const form = `
       <form class="routine-modal-form" data-form="routine" novalidate>
         <div class="section-head">
-          <h2 id="routine-form-title">${isEdit ? '루틴 수정' : '루틴 추가'}</h2>
+          <h2 id="routine-form-title">${isEdit ? '습관 수정' : '습관 추가'}</h2>
         </div>
         <div class="form-group">
-          <label for="routine-name">루틴명 <span class="req">*</span></label>
+          <label for="routine-name">습관명 <span class="req">*</span></label>
           <div class="name-row">
             <div class="emoji-wrap">
               <button type="button" class="emoji-btn ${r.emoji ? '' : 'empty'}" data-action="toggle-emoji-picker"
@@ -948,7 +955,7 @@ registerSW({ immediate: true });
               ${r.pickerOpen ? renderEmojiPicker(r) : ''}
             </div>
             <input id="routine-name" class="field" name="name" value="${esc(r.name)}" maxlength="50"
-                   placeholder="루틴명을 입력해주세요" autocomplete="off" />
+                   placeholder="습관명을 입력해주세요" autocomplete="off" />
           </div>
           ${r.error ? `<p class="error">${esc(r.error)}</p>` : ''}
         </div>
@@ -980,7 +987,7 @@ registerSW({ immediate: true });
                      )
                      .join('')}
                  </div>
-                 <p class="hint">선택한 요일에만 루틴이 표시됩니다.</p>`
+                 <p class="hint">선택한 요일에만 습관이 표시됩니다.</p>`
               : ''
           }
           ${
@@ -1036,7 +1043,7 @@ registerSW({ immediate: true });
       ${modal}`;
   }
 
-  /** 루틴 추가·수정 팝업을 닫고 목록만 있는 루틴 관리 화면으로 */
+  /** 습관 추가·수정 팝업을 닫고 목록만 있는 습관 관리 화면으로 */
   function closeRoutineEditor() {
     location.replace('#/routines');
   }
@@ -1590,13 +1597,13 @@ registerSW({ immediate: true });
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
   }
 
-  // 빈도만 보고 그 날 해야 하는 루틴인지 (시작일과 무관 — 월간 목표 계산용)
+  // 빈도만 보고 그 날 해야 하는 습관인지 (시작일과 무관 — 월간 목표 계산용)
   function routineDueByFreq(r, dateStr) {
     if (r.freq.type === 'days') return r.freq.days.includes(parse(dateStr).getDay());
     return true; // daily, weekly
   }
 
-  // 루틴 하나의 월간 통계: 목표 횟수는 그 달 전체 기준
+  // 습관 하나의 월간 통계: 목표 횟수는 그 달 전체 기준
   // (매일 = 그 달 일수, 요일 선택 = 그 달에 해당 요일 수, 주 N회 = N × 일수 / 7)
   function routineMonthStats(r, ym) {
     const days = monthDays(ym);
@@ -1611,7 +1618,7 @@ registerSW({ immediate: true });
 
   // 하루 단위 집계 (종합 달력용)
   function dayStats(dateStr) {
-    // 루틴: 그 날 해야 하는 루틴(매일·요일) 중 체크한 비율. 주 N회 루틴은 체크한 날만 분모에 넣는다.
+    // 습관: 그 날 해야 하는 습관(매일·요일) 중 체크한 비율. 주 N회 습관은 체크한 날만 분모에 넣는다.
     const due = db.routines.filter(
       (r) => routineAppliesTo(r, dateStr) && (r.freq.type !== 'weekly' || isChecked(r.id, dateStr))
     );
@@ -1628,7 +1635,7 @@ registerSW({ immediate: true });
     };
   }
 
-  // 종합: 그 달 달력에 날마다 루틴·할 일 달성률, 일기 작성 여부 표시
+  // 종합: 그 달 달력에 날마다 습관·할 일 달성률, 일기 작성 여부 표시
   function renderMonthCalendar(ym) {
     const today = todayStr();
     const days = monthDays(ym);
@@ -1642,7 +1649,7 @@ registerSW({ immediate: true });
         const s = dayStats(d);
         const tip = [
           dayLabel(d),
-          s.routineRate !== null ? `루틴 ${s.routineText} (${s.routineRate}%)` : '',
+          s.routineRate !== null ? `습관 ${s.routineText} (${s.routineRate}%)` : '',
           s.todoRate !== null ? `할 일 ${s.todoText} (${s.todoRate}%)` : '',
           s.diary ? '일기 작성' : '',
         ]
@@ -1668,7 +1675,7 @@ registerSW({ immediate: true });
           ${blanks}${cells}
         </div>
         <div class="mcal-legend">
-          <span><i class="mcal-key routine"></i>루틴 달성률</span>
+          <span><i class="mcal-key routine"></i>습관 달성률</span>
           <span><i class="mcal-key todo"></i>할 일 달성률</span>
           <span><span class="mcal-diary">${DIARY_ICON}</span>일기 작성</span>
         </div>
@@ -1724,7 +1731,7 @@ registerSW({ immediate: true });
       })
       .join('');
 
-    // 루틴 관리 페이지와 같이 header 제목 자리에 뒤로가기 + 페이지 제목을 둔다
+    // 습관 관리 페이지와 같이 header 제목 자리에 뒤로가기 + 페이지 제목을 둔다
     setHeaderTitle(`
       <div class="page-title">
         <button class="back-btn" data-action="stats-back" aria-label="뒤로가기">&lsaquo;</button>
@@ -1743,11 +1750,11 @@ registerSW({ immediate: true });
     const avgText = avg === null ? '-' : avg + '%';
     const summaryCells = {
       all: [
-        cell('루틴 달성률', avgText),
+        cell('습관 달성률', avgText),
         cell('할 일 달성률', todoRate === null ? '-' : todoRate + '%'),
         cell('작성한 일기', `${diaryCount}개`),
       ],
-      routine: [cell('루틴 달성률', avgText), cell('루틴 수', `${db.routines.length}개`)],
+      routine: [cell('습관 달성률', avgText), cell('습관 수', `${db.routines.length}개`)],
       todo: [
         cell('할 일 달성률', todoRate === null ? '-' : todoRate + '%'),
         cell('작성한 할 일', `${todoAll.length}개`),
@@ -1758,7 +1765,7 @@ registerSW({ immediate: true });
 
     const TABS = [
       ['all', '종합'],
-      ['routine', '루틴'],
+      ['routine', '습관'],
       ['todo', '할 일'],
       ['diary', '일기'],
     ];
@@ -1800,15 +1807,15 @@ registerSW({ immediate: true });
     function renderMonthRoutines() {
       return `
       <section class="section">
-        <div class="section-head"><h2>루틴별 달성률</h2></div>
+        <div class="section-head"><h2>습관별 달성률</h2></div>
         ${
           !db.routines.length
-            ? '<p class="empty">등록된 루틴이 없어요.</p>'
+            ? '<p class="empty">등록된 습관이 없어요.</p>'
             : isFuture
               ? `${FUTURE_NOTE}<ul class="list">${list}</ul>`
               : `<ul class="list">${list}</ul>`
         }
-        <p class="hint">달성률은 그 달 전체에 해야 하는 횟수 기준이에요. <br>주 N회 루틴은 주 단위 목표를 그 달 날짜 수에 맞춰 계산해요.</p>
+        <p class="hint">달성률은 그 달 전체에 해야 하는 횟수 기준이에요. <br>주 N회 습관은 주 단위 목표를 그 달 날짜 수에 맞춰 계산해요.</p>
       </section>`;
     }
   }
@@ -1832,7 +1839,7 @@ registerSW({ immediate: true });
       </ul>`;
   }
 
-  // 월간 현황: 아직 오지 않은 달 안내 (루틴 · 일기 공용)
+  // 월간 현황: 아직 오지 않은 달 안내 (습관 · 일기 공용)
   const FUTURE_NOTE = `
     <p class="future-note" role="note">
       <svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"
@@ -1848,12 +1855,12 @@ registerSW({ immediate: true });
     return `${d.getMonth() + 1}월 ${d.getDate()}일 (${WEEKDAYS[d.getDay()]})`;
   }
 
-  // 날짜 머리줄 (표시만)
+  // 날짜 머리줄 (표시만): 주차 카드 안이라 월은 빼고 '3일 (월)'
   function statsDayHead(dateStr, extra = '') {
     const dow = parse(dateStr).getDay();
     return `
       <div class="stats-day-head ${dow === 0 ? 'sun' : dow === 6 ? 'sat' : ''}">
-        <span class="stats-day-label">${dayLabel(dateStr)}</span>
+        <span class="stats-day-label">${Number(dateStr.slice(8))}일 (${WEEKDAYS[dow]})</span>
         ${extra}
       </div>`;
   }
@@ -1865,35 +1872,63 @@ registerSW({ immediate: true });
       .sort();
     const all = dates.flatMap((d) => db.todos[d]);
     const doneCount = all.filter((t) => t.done).length;
-    // 아직 오지 않은 달: 루틴·일기와 같은 안내 상자 (미리 적어 둔 할 일이 있으면 그 아래에 그대로)
+    // 아직 오지 않은 달: 습관·일기와 같은 안내 상자 (미리 적어 둔 할 일이 있으면 그 아래에 그대로)
     const isFutureMonth = ym > todayStr().slice(0, 7);
 
+    const dayHtml = (d) => {
+      const todos = db.todos[d];
+      const done = todos.filter((t) => t.done).length;
+      const rate = Math.round((done / todos.length) * 100);
+      return `
+        <li class="stats-day">
+          ${statsDayHead(d, `<span class="routine-meta stats-day-count">${done}/${todos.length} · ${rate}%</span>`)}
+          <div class="progress todo-progress"><span style="width:${rate}%"></span></div>
+          <ul class="stats-todo-list">
+            ${todos
+              .map(
+                (t) => `
+                <li class="stats-todo ${t.done ? 'done' : ''}">
+                  <span class="stats-check" aria-label="${t.done ? '완료' : '미완료'}">${t.done ? '✓' : ''}</span>
+                  <span class="text">${esc(t.text)}</span>
+                </li>`
+              )
+              .join('')}
+          </ul>
+        </li>`;
+    };
+
+    // 일기와 같은 기준: 일요일 시작 주차 (달 밖 날짜는 넣지 않음), 할 일이 있는 주만 보여준다
+    const weeks = [];
+    let week = [];
+    monthDays(ym).forEach((d) => {
+      if (week.length && parse(d).getDay() === 0) {
+        weeks.push(week);
+        week = [];
+      }
+      week.push(d);
+    });
+    if (week.length) weeks.push(week);
+    const md = (d) => `${Number(d.slice(5, 7))}.${Number(d.slice(8))}`;
+
     const body = dates.length
-      ? `<ul class="stats-days">
-          ${dates
-            .map((d) => {
-              const todos = db.todos[d];
-              const done = todos.filter((t) => t.done).length;
-              const rate = Math.round((done / todos.length) * 100);
+      ? `<div class="dweeks">
+          ${weeks
+            .map((w, i) => {
+              const wDates = dates.filter((d) => d >= w[0] && d <= w[w.length - 1]);
+              if (!wDates.length) return '';
+              const wTodos = wDates.flatMap((d) => db.todos[d]);
+              const wDone = wTodos.filter((t) => t.done).length;
               return `
-                <li class="stats-day">
-                  ${statsDayHead(d, `<span class="routine-meta stats-day-count">${done}/${todos.length} · ${rate}%</span>`)}
-                  <div class="progress todo-progress"><span style="width:${rate}%"></span></div>
-                  <ul class="stats-todo-list">
-                    ${todos
-                      .map(
-                        (t) => `
-                        <li class="stats-todo ${t.done ? 'done' : ''}">
-                          <span class="stats-check" aria-label="${t.done ? '완료' : '미완료'}">${t.done ? '✓' : ''}</span>
-                          <span class="text">${esc(t.text)}</span>
-                        </li>`
-                      )
-                      .join('')}
-                  </ul>
-                </li>`;
+              <div class="dweek">
+                <div class="dweek-head">
+                  <strong>${i + 1}주차</strong>
+                  <span class="routine-meta">${md(w[0])} – ${md(w[w.length - 1])} · ${wDone}/${wTodos.length} · ${Math.round((wDone / wTodos.length) * 100)}%</span>
+                </div>
+                <ul class="stats-days">${wDates.map(dayHtml).join('')}</ul>
+              </div>`;
             })
             .join('')}
-        </ul>`
+        </div>`
       : isFutureMonth
         ? ''
         : '<p class="empty">이 달에 쓴 할 일이 없어요.</p>';
@@ -2105,8 +2140,8 @@ registerSW({ immediate: true });
   function renderAuthSlot() {
     if (!authSlot) return;
     if (/^#\/routine/.test(location.hash)) {
-      // 루틴 관리 페이지: 로그인/로그아웃 자리에 루틴 추가 버튼
-      authSlot.innerHTML = `<button type="button" class="btn primary" data-action="routine-add">+ 루틴 추가</button>`;
+      // 습관 관리 페이지: 로그인/로그아웃 자리에 습관 추가 버튼
+      authSlot.innerHTML = `<button type="button" class="btn primary" data-action="routine-add">+ 습관 추가</button>`;
     } else if (/^#\/event/.test(location.hash)) {
       // 일정 관리 페이지: 로그인/로그아웃 자리에 일정 추가 버튼
       authSlot.innerHTML = `<button type="button" class="btn primary" data-action="event-add">+ 일정 추가</button>`;
@@ -2212,7 +2247,7 @@ registerSW({ immediate: true });
     if (headerSub) headerSub.innerHTML = ''; // 메인이 아니면 header 달력 비움 (메인은 renderMain에서 다시 채움)
     document.body.classList.remove('modal-open');
     if (hash !== '/login') loginState = null;
-    // 루틴 관리·추가·수정 페이지는 로그인 후에만 (주소로 직접 들어와도 로그인 화면으로).
+    // 습관 관리·추가·수정 페이지는 로그인 후에만 (주소로 직접 들어와도 로그인 화면으로).
     // 세션 확인 중(authLoading)에는 막지 않고, 확인 결과 비로그인이면 handleSession → route 에서 다시 걸러진다
     if ((hash.startsWith('/routine') || hash.startsWith('/event')) && needLogin() && !authLoading) {
       location.replace('#/login');
@@ -2275,8 +2310,8 @@ registerSW({ immediate: true });
    * ========================================================= */
   /* ---------- 로그인 필요 동작 ---------- */
   const WRITE_ACTIONS = new Set([
-    'new-routine', 'edit-routine', 'toggle-routine',
-    'add-todo', 'toggle-todo', 'edit-todo', 'delete-todo',
+    'new-routine', 'toggle-routine',
+    'add-todo', 'toggle-todo', 'edit-todo', 'delete-todo', 'postpone-todo',
     'edit-diary',
     'open-events',
   ]);
@@ -2356,12 +2391,9 @@ registerSW({ immediate: true });
         renderMain();
         break;
 
-      /* --- 루틴 --- */
+      /* --- 습관 --- */
       case 'new-routine':
         goRoutine('/routines');
-        break;
-      case 'edit-routine':
-        goRoutine(`/routine/edit/${id}`);
         break;
       case 'toggle-routine': {
         const list = db.routineChecks[ui.selected] || [];
@@ -2392,6 +2424,22 @@ registerSW({ immediate: true });
           saveDB();
           renderMain();
         }
+        break;
+      }
+      case 'postpone-todo': {
+        // 선택한 날짜에서 빼서 다음 날 목록 맨 아래로 옮긴다
+        const from = ui.selected;
+        const to = addDays(from, 1);
+        const list = db.todos[from] || [];
+        const t = list.find((x) => x.id === id);
+        if (!t) break;
+        db.todos[from] = list.filter((x) => x.id !== id);
+        if (!db.todos[from].length) delete db.todos[from];
+        (db.todos[to] ||= []).push(t);
+        if (ui.todoEditingId === id) ui.todoEditingId = null;
+        saveDB();
+        renderMain();
+        showToast(`${Number(to.slice(5, 7))}월 ${Number(to.slice(8))}일로 미뤘어요.`);
         break;
       }
       case 'edit-todo':
@@ -2449,7 +2497,7 @@ registerSW({ immediate: true });
         renderLogin();
         break;
 
-      /* --- 루틴 설정 페이지 --- */
+      /* --- 습관 설정 페이지 --- */
       /* --- 월간 현황 --- */
       case 'open-stats':
         goRoutine('/stats');
@@ -2585,7 +2633,7 @@ registerSW({ immediate: true });
 
       case 'open-routine':
         if (routineDraft && routineDraft.id === id) break;
-        // 루틴 페이지 안에서의 이동은 히스토리를 쌓지 않음 (취소 시 메인으로 바로 복귀)
+        // 습관 페이지 안에서의 이동은 히스토리를 쌓지 않음 (취소 시 메인으로 바로 복귀)
         location.replace(`#/routine/edit/${id}`);
         break;
       case 'toggle-emoji-picker':
@@ -2623,7 +2671,7 @@ registerSW({ immediate: true });
         leaveRoutineForm();
         break;
       case 'routine-add':
-        // 루틴 페이지 안에서의 이동은 히스토리를 쌓지 않음
+        // 습관 페이지 안에서의 이동은 히스토리를 쌓지 않음
         location.replace('#/routine/new');
         break;
       case 'routine-close':
@@ -2632,7 +2680,7 @@ registerSW({ immediate: true });
       case 'routine-delete': {
         const rid = routineDraft.id;
         void showDialog({
-          message: '이 루틴을 삭제할까요?\n완료 기록도 함께 삭제됩니다.',
+          message: '이 습관을 삭제할까요?\n완료 기록도 함께 삭제됩니다.',
           confirmText: '삭제',
           cancelText: '취소',
           danger: true,
@@ -2645,7 +2693,7 @@ registerSW({ immediate: true });
           });
           saveDB();
           closeRoutineEditor();
-          showToast('루틴을 삭제했어요.');
+          showToast('습관을 삭제했어요.');
         });
         break;
       }
@@ -2662,7 +2710,7 @@ registerSW({ immediate: true });
     if (e.target.matches('textarea[data-autogrow]')) autoGrow(e.target);
   });
 
-  // 루틴 설정 폼: 입력값을 draft에 유지 (재렌더링 시 보존)
+  // 습관 설정 폼: 입력값을 draft에 유지 (재렌더링 시 보존)
   view.addEventListener('input', (e) => {
     if (!routineDraft) return;
     const { name, value } = e.target;
@@ -2769,7 +2817,7 @@ registerSW({ immediate: true });
       const r = routineDraft;
       r.name = r.name.trim();
       if (!r.name) {
-        r.error = '루틴명을 입력해주세요.';
+        r.error = '습관명을 입력해주세요.';
         renderRoutineForm();
         return focusField('#routine-name');
       }
@@ -2783,15 +2831,15 @@ registerSW({ immediate: true });
         const target = db.routines.find((x) => x.id === r.id);
         Object.assign(target, data);
         saveDB();
-        // 수정 팝업을 닫고 루틴 관리 목록에 남는다 (목록에 바뀐 내용이 바로 반영됨)
+        // 수정 팝업을 닫고 습관 관리 목록에 남는다 (목록에 바뀐 내용이 바로 반영됨)
         closeRoutineEditor();
-        showToast('루틴을 저장했어요.');
+        showToast('습관을 저장했어요.');
       } else {
         db.routines.push({ id: uid(), ...data, startDate: todayStr() });
         saveDB();
-        // 추가 팝업을 닫고 루틴 관리 목록에 남는다
+        // 추가 팝업을 닫고 습관 관리 목록에 남는다
         closeRoutineEditor();
-        showToast('루틴을 추가했어요.');
+        showToast('습관을 추가했어요.');
       }
     }
   });
@@ -2809,7 +2857,7 @@ registerSW({ immediate: true });
       return;
     }
     if (routineDraft) {
-      // 루틴 추가·수정 팝업: ESC로 닫기 (이모지 선택창이 열려 있으면 그것만 닫기)
+      // 습관 추가·수정 팝업: ESC로 닫기 (이모지 선택창이 열려 있으면 그것만 닫기)
       if (routineDraft.pickerOpen) {
         routineDraft.pickerOpen = false;
         renderRoutineForm();

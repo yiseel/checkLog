@@ -27,7 +27,7 @@
   --tint-strong: rgba(163, 204, 218, 0.35); /* 선택된 칸 배경 */
   --primary-ink: #1d3d48;                  /* --gold 위 글씨 */
   --danger-ink: #8a4545;                   /* --gold-soft 위 글씨 */
-  --list-font: 0.8rem;                     /* 메인 루틴명 · 할 일 · 일기 글자 크기 */
+  --list-font: 0.8rem;                     /* 메인 습관명 · 할 일 · 일기 글자 크기 */
   --shadow-sm: 0 6px 18px rgba(33, 79, 96, 0.07);
 }
 
@@ -300,13 +300,12 @@ body[data-route="login"] .app-header { display: none; }
 }
 .item:first-child { border-top: none; }
 .item .text { flex: 1; min-width: 0; word-break: break-all; }
-/* 할 일 완료: 글자 전체에 취소선 (루틴 줄은 아래 .routine-item 규칙에서 루틴명에만) */
+/* 할 일 완료: 글자 전체에 취소선 (습관 줄은 아래 .routine-item 규칙에서 습관명에만) */
 .item.done:not(.routine-item) .text { color: var(--ink-soft); text-decoration: line-through; }
 .item input[type="checkbox"] { width: 1.125rem; height: 1.125rem; accent-color: var(--sea); flex: none; }
 
 .routine-bar { width: 0.25rem; align-self: stretch; border-radius: 0.25rem; flex: none; }
-.routine-name { border: none; background: none; padding: 0; text-align: left; font-weight: 500; }
-.routine-name:hover { text-decoration: underline; }
+.routine-name { font-weight: 500; }
 .routine-meta { display: block; font-size: 0.75rem; color: var(--ink-soft); }
 
 /* ---------- 버튼 (여행앱 .btn--ghost / --primary / --danger 계열) ---------- */
@@ -367,7 +366,7 @@ textarea.diary-input { /* textarea.field(resize: vertical)보다 우선 */
   line-height: 1.5;
 }
 
-/* ---------- 루틴 설정 페이지 ---------- */
+/* ---------- 습관 설정 페이지 ---------- */
 .page-title { display: flex; align-items: center; gap: 0.5rem; margin: 0 0 0.875rem; }
 
 /* header 제목 영역 — 페이지 제목으로 바뀌어도 header 높이가 그대로 유지되게 */
@@ -437,7 +436,7 @@ textarea.diary-input { /* textarea.field(resize: vertical)보다 우선 */
 .month-strip .cell.miss { background: var(--line); }
 .month-strip .cell.off { background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
 
-/* 루틴 정렬 목록 */
+/* 습관 정렬 목록 */
 .sort-item { gap: 0.5rem; padding: 0.5rem 0; background: var(--surface); }
 .sort-item.current .sort-name { font-weight: 700; }
 .sort-item.dragging {
@@ -462,7 +461,7 @@ textarea.diary-input { /* textarea.field(resize: vertical)보다 우선 */
   border: none; background: none; padding: 0.125rem 0.25rem; text-align: left; border-radius: 0.625rem;
 }
 .sort-body:hover { background: var(--tint); }
-/* 루틴명 · (수정 중) · 빈도를 한 줄로, 빈도는 오른쪽 끝 */
+/* 습관명 · (수정 중) · 빈도를 한 줄로, 빈도는 오른쪽 끝 */
 .sort-body .sort-name {
   font-size: var(--list-font);
   flex: 1; min-width: 0;
@@ -470,11 +469,11 @@ textarea.diary-input { /* textarea.field(resize: vertical)보다 우선 */
 }
 .sort-body .routine-meta { flex: none; margin-left: auto; white-space: nowrap; }
 
-/* 내 루틴 목록 안내: 손잡이 아이콘을 글자 사이에 작게 */
+/* 내 습관 목록 안내: 손잡이 아이콘을 글자 사이에 작게 */
 .sort-hint { display: inline-flex; align-items: center; gap: 0.1875rem; }
 .sort-hint svg { width: 0.4375rem; height: 0.6875rem; color: #a9b8bd; }
 
-/* 루틴 추가 팝업 (폼이 길어서 팝업 안에서 스크롤) */
+/* 습관 추가 팝업 (폼이 길어서 팝업 안에서 스크롤) */
 body.modal-open { overflow: hidden; }
 .routine-modal-backdrop { animation: none; }
 .routine-modal-backdrop.enter { animation: modal-fade .15s ease; }
@@ -495,7 +494,7 @@ body.modal-open { overflow: hidden; }
 
 .routine-emoji { font-size: 1.25rem; line-height: 1; flex: none; }
 
-/* 루틴명 + 이모지 */
+/* 습관명 + 이모지 */
 .name-row { display: flex; gap: 0.5rem; align-items: stretch; }
 .emoji-wrap { position: relative; flex: none; }
 .emoji-btn {
@@ -611,6 +610,8 @@ body.modal-open { overflow: hidden; }
 .stats-days { list-style: none; margin: 0; padding: 0; }
 .stats-day { padding: 0.625rem 0; border-top: 1px solid var(--line); }
 .stats-day:first-child { border-top: none; padding-top: 0.25rem; }
+/* 주차 카드 안의 할 일 목록 */
+.dweek .stats-days { padding: 0.5rem 0.5rem 0.125rem; }
 
 .stats-day-head {
   display: flex;
@@ -638,7 +639,7 @@ body.modal-open { overflow: hidden; }
 }
 .stats-todo.done .stats-check { background: var(--gold); border-color: var(--gold); color: var(--primary-ink); }
 
-/* 월간 현황 상단 탭 (종합 / 루틴 / 할 일 / 일기) */
+/* 월간 현황 상단 탭 (종합 / 습관 / 할 일 / 일기) */
 .stats-tabs { margin-bottom: 0.875rem; }
 .stats-tabs + .section { margin-top: 0; }
 /* header 안에 들어간 탭(스크롤해도 고정): 아래 여백은 header 패딩이 담당 */
@@ -731,13 +732,13 @@ body.modal-open { overflow: hidden; }
   .mcal-rate small { display: none; }
 }
 
-/* ---------- 메인 루틴 목록 ---------- */
-/* 체크해도 빈도(routine-meta)에는 선을 긋지 않고 루틴명에만 */
+/* ---------- 메인 습관 목록 ---------- */
+/* 체크해도 빈도(routine-meta)에는 선을 긋지 않고 습관명에만 */
 .routine-item.done .routine-name { color: var(--ink-soft); text-decoration: line-through; }
 /* 글자 조금 작게 */
 .routine-item { padding: 0.5rem 0; }
 .routine-item .routine-name { font-size: var(--list-font); }
-/* 할 일 · 일기도 루틴명과 같은 크기 */
+/* 할 일 · 일기도 습관명과 같은 크기 */
 .todo-item .text,
 .diary-text { font-size: var(--list-font); }
 .routine-item .routine-meta { font-size: 0.6875rem; }
@@ -851,7 +852,7 @@ body.modal-open { overflow: hidden; }
   border-bottom: 1px solid var(--line);
 }
 .dweek-head strong { font-size: 0.8125rem; color: var(--sea-deep); }
-/* 월간 현황: 아직 오지 않은 달 안내 (루틴 · 일기 공용) */
+/* 월간 현황: 아직 오지 않은 달 안내 (습관 · 일기 공용) */
 .future-note {
   display: flex;
   align-items: center;
