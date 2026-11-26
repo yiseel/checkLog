@@ -2340,6 +2340,46 @@ registerSW({ immediate: true });
   view.addEventListener('click', onViewClick);
   headerSub?.addEventListener('click', onViewClick);
 
+  /* ---------- 월간 현황: 좌우 스와이프로 탭 이동 (종합 ↔ 습관 ↔ 할 일 ↔ 일기) ---------- */
+  const STATS_TAB_ORDER = ['all', 'routine', 'todo', 'diary'];
+  let swipe = null;
+  view.addEventListener(
+    'touchstart',
+    (e) => {
+      swipe = null;
+      if (!statsMonth || e.touches.length !== 1) return;
+      if (document.querySelector('.modal-backdrop')) return; // 일기 팝업 등이 떠 있으면 무시
+      const t = e.touches[0];
+      swipe = { x: t.clientX, y: t.clientY, at: Date.now() };
+    },
+    { passive: true }
+  );
+  view.addEventListener(
+    'touchend',
+    (e) => {
+      if (!swipe || !statsMonth) return;
+      const t = e.changedTouches[0];
+      const dx = t.clientX - swipe.x;
+      const dy = t.clientY - swipe.y;
+      const quick = Date.now() - swipe.at < 600;
+      swipe = null;
+      // 옆으로 충분히(60px) 밀었고, 세로 스크롤보다 가로 움직임이 확실히 클 때만
+      if (!quick || Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+      const i = STATS_TAB_ORDER.indexOf(statsTab);
+      const next = STATS_TAB_ORDER[i + (dx < 0 ? 1 : -1)];
+      if (!next) return; // 처음/끝 탭에서는 그대로
+      statsTab = next;
+      renderStats();
+      view.classList.remove('swipe-from-left', 'swipe-from-right');
+      void view.offsetWidth; // 애니메이션 다시 시작
+      view.classList.add(dx < 0 ? 'swipe-from-right' : 'swipe-from-left');
+    },
+    { passive: true }
+  );
+  view.addEventListener('animationend', (e) => {
+    if (e.target === view) view.classList.remove('swipe-from-left', 'swipe-from-right');
+  });
+
   function onViewClick(e) {
     const el = e.target.closest('[data-action]');
     if (!el) return;

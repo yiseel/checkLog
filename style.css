@@ -1205,3 +1205,14 @@ div.event-card:hover { background: color-mix(in srgb, var(--ec) 30%, #fff); }
 }
 .cal-day.has-data .dot { background: var(--sea); }
 .cal-day.on.has-data .dot { background: var(--sand); }
+
+/* 월간 현황: 스와이프로 탭을 넘길 때 들어오는 방향으로 살짝 미끄러지듯 */
+@keyframes swipe-in-right { from { opacity: 0.4; transform: translateX(2rem); } to { opacity: 1; transform: none; } }
+@keyframes swipe-in-left  { from { opacity: 0.4; transform: translateX(-2rem); } to { opacity: 1; transform: none; } }
+#view.swipe-from-right { animation: swipe-in-right .22s ease; }
+#view.swipe-from-left  { animation: swipe-in-left .22s ease; }
+@media (prefers-reduced-motion: reduce) {
+  #view.swipe-from-right, #view.swipe-from-left { animation: none; }
+}
+/* 미끄러지는 동안 가로 스크롤바가 생기지 않게 (clip은 sticky를 깨지 않음) */
+.app { overflow-x: clip; }
