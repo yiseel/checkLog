@@ -1911,7 +1911,7 @@ registerSW({ immediate: true });
     const md = (d) => `${Number(d.slice(5, 7))}.${Number(d.slice(8))}`;
 
     const body = dates.length
-      ? `<div class="dweeks">
+      ? `<div class="dweeks dweeks--todo">
           ${weeks
             .map((w, i) => {
               const wDates = dates.filter((d) => d >= w[0] && d <= w[w.length - 1]);
@@ -1993,7 +1993,7 @@ registerSW({ immediate: true });
     // 아직 오지 않은 달은 안내 문구 + 빈 위클리를 그대로 보여준다
     const isFuture = ym > todayStr().slice(0, 7);
     const body = written || isFuture
-      ? `${isFuture ? FUTURE_NOTE : ''}<div class="dweeks">
+      ? `${isFuture ? FUTURE_NOTE : ''}<div class="dweeks dweeks--paper">
           ${weeks
             .map(
               (w, i) => `

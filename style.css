@@ -612,6 +612,10 @@ body.modal-open { overflow: hidden; }
 .stats-day:first-child { border-top: none; padding-top: 0.25rem; }
 /* 주차 카드 안의 할 일 목록 */
 .dweek .stats-days { padding: 0.5rem 0.5rem 0.125rem; }
+/* 할 일 주차 카드 머리: 하늘색 계열 (일기는 노란 메모지 계열) */
+.dweeks--todo .dweek-head {
+  background: linear-gradient(90deg, rgba(163, 204, 218, 0.5), rgba(163, 204, 218, 0.18));
+}
 
 .stats-day-head {
   display: flex;
@@ -871,6 +875,23 @@ body.modal-open { overflow: hidden; }
 /* 하루 한 줄: 날짜 | 기분 | 내용 한 줄 (줄 사이 점선 = 플래너 줄) */
 .dweek-days { list-style: none; margin: 0; padding: 0; }
 .dweek-days > li + li { border-top: 1px dashed var(--line); }
+
+/* 일기 위클리: 일기장 팝업과 같은 메모지 (크림 종이 · 머리 밑줄 · 하늘색 공책 줄 · 붉은 여백선) */
+.dweeks--paper .dweek {
+  background: #fffdf6;
+  border-color: rgba(184, 137, 46, 0.25);
+}
+.dweeks--paper .dweek-head {
+  background: rgba(248, 229, 186, 0.35);
+  border-bottom: 2px solid rgba(196, 122, 122, 0.35);
+}
+.dweeks--paper .dweek-days {
+  /* 날짜 칸(0.75rem 여백 + 2.75rem) 바로 뒤에 세로 여백선 */
+  background: linear-gradient(90deg, transparent 3.5rem, rgb(186 227 248 / 55%) 3.5rem, rgb(186 234 248 / 20%) calc(3.5rem + 1px), transparent calc(3.5rem + 1px));
+}
+.dweeks--paper .dweek-days > li + li { border-top: 1px solid rgba(163, 204, 218, 0.55); }
+.dweeks--paper .dweek-days > li:last-child { border-bottom: 1px solid rgba(163, 204, 218, 0.55); }
+.dweeks--paper .dweek-days { padding-bottom: 0.5rem; }
 .dweek-row {
   width: 100%;
   display: grid;
@@ -896,6 +917,7 @@ button.dweek-row:hover { background: rgba(248, 229, 186, 0.3); }
   display: inline-flex; align-items: center; justify-content: center;
   font-size: 1.125rem; line-height: 1;
   color: #b8892e;
+  padding-left: 0.5rem;
 }
 .dweek-mood svg { width: 0.875rem; height: 0.875rem; }
 .dweek-text {
