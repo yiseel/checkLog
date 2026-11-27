@@ -407,6 +407,12 @@ registerSW({ immediate: true });
          stroke-linecap="round" aria-hidden="true">
       <path d="M8 2.5v11M2.5 8h11" />
     </svg>`;
+  // 섹션 › 버튼: 다른 페이지(습관·일정 관리)로 이동. 꺾쇠의 시각적 무게중심이 가운데 오게 살짝 오른쪽으로
+  const NEXT_ICON = `
+    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M6.25 3.5L10.75 8l-4.5 4.5" />
+    </svg>`;
   // 내일로 미루기 (오른쪽 화살표 + 세로줄)
   const POSTPONE_ICON = `
     <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6"
@@ -647,7 +653,7 @@ registerSW({ immediate: true });
       <section class="section">
         <div class="section-head">
           <h2>습관${list.length ? `<span class="count">${doneCount}/${list.length}</span>` : ''}</h2>
-          <button class="add-btn" data-action="new-routine" aria-label="습관 추가">${PLUS_ICON}</button>
+          <button class="add-btn" data-action="new-routine" aria-label="습관 관리" title="습관 관리">${NEXT_ICON}</button>
         </div>
         ${list.length ? `<ul class="list">${items}</ul>` : '<p class="empty">이 날짜에 해당하는 습관이 없어요.</p>'}
       </section>`;
@@ -1209,7 +1215,7 @@ registerSW({ immediate: true });
       <section class="section">
         <div class="section-head">
           <h2>일정${list.length ? `<span class="count">${list.length}</span>` : ''}</h2>
-          <button class="add-btn" data-action="open-events" aria-label="일정 관리">${PLUS_ICON}</button>
+          <button class="add-btn" data-action="open-events" aria-label="일정 관리" title="일정 관리">${NEXT_ICON}</button>
         </div>
         ${
           list.length
@@ -2249,6 +2255,8 @@ registerSW({ immediate: true });
     const hash = location.hash.replace(/^#/, '') || '/';
     let m;
     document.body.dataset.route = hash === '/login' ? 'login' : '';
+    // 메인을 떠나면 할 일·일기 입력 상태를 닫는다 (돌아왔을 때 기본 상태로 보이게)
+    if (/^\/(login|stats|event|routine)/.test(hash)) resetEditing();
     setHeaderTitle(null);
     if (headerSub) headerSub.innerHTML = ''; // 메인이 아니면 header 달력 비움 (메인은 renderMain에서 다시 채움)
     document.body.classList.remove('modal-open');
